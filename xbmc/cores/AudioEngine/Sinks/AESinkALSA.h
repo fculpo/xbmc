@@ -63,6 +63,7 @@ private:
   static snd_pcm_chmap_t* AEChannelMapToALSAchmap(const CAEChannelInfo& info);
   static snd_pcm_chmap_t* CopyALSAchmap(snd_pcm_chmap_t* alsaMap);
   static std::string ALSAchmapToString(snd_pcm_chmap_t* alsaMap);
+  static unsigned int ALSAchmapActiveCount(snd_pcm_chmap_t& chmap);
   static CAEChannelInfo GetAlternateLayoutForm(const CAEChannelInfo& info);
   snd_pcm_chmap_t* SelectALSAChannelMap(const CAEChannelInfo& info);
 
@@ -98,12 +99,12 @@ private:
   bool InitializeHW(const ALSAConfig &inconfig, ALSAConfig &outconfig);
   bool InitializeSW(const ALSAConfig &inconfig);
 
-  static void AppendParams(std::string &device, const std::string &params);
+  static void AppendParams(std::string &device, std::string_view params);
   static bool TryDevice(const std::string &name, snd_pcm_t **pcmp, snd_config_t *lconf);
   static bool TryDeviceWithParams(const std::string &name, const std::string &params, snd_pcm_t **pcmp, snd_config_t *lconf);
   static bool OpenPCMDevice(const std::string &name, const std::string &params, int channels, snd_pcm_t **pcmp, snd_config_t *lconf);
 
-  static AEDeviceType AEDeviceTypeFromName(const std::string &name);
+  static AEDeviceType AEDeviceTypeFromName(std::string_view name);
   static std::string GetParamFromName(const std::string &name, const std::string &param);
   static void EnumerateDevice(AEDeviceInfoList &list, const std::string &device, const std::string &description, snd_config_t *config);
   static bool SoundDeviceExists(const std::string& device);

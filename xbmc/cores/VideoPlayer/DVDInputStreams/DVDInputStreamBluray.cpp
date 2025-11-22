@@ -505,7 +505,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_DISCONTINUITY:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_DISCONTINUITY");
-    m_hold = HOLD_STILL;
+    m_player->OnDiscNavResult(&m_event.param, BD_EVENT_DISCONTINUITY);
+    m_hold = HOLD_NONE;
     break;
 
     /* playback position */
@@ -600,6 +601,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     m_menu = (m_event.param != 0);
     if (!m_menu)
       m_isInMainMenu = false;
+      m_player->OnDiscNavResult(&m_event.param, BD_EVENT_MENU);
     break;
 
   case BD_EVENT_IDLE:

@@ -25,13 +25,13 @@ class CBitstreamConverter;
 
 class CDVDVideoCodecAmlogic;
 
-typedef std::tuple<uint8_t*, uint32_t, bool> DLDemuxPacket;
+typedef std::tuple<uint8_t*, uint32_t, bool, double> DLDemuxPacket;
 
 class CAMLVideoBuffer : public CVideoBuffer
 {
 public:
   CAMLVideoBuffer(int id) : CVideoBuffer(id) {};
-  void Set(CDVDVideoCodecAmlogic *codec, std::shared_ptr<CAMLCodec> amlcodec, int omxPts, int amlDuration, uint32_t bufferIndex)
+  void Set(CDVDVideoCodecAmlogic *codec, std::shared_ptr<CAMLCodec> amlcodec, uint64_t omxPts, int amlDuration, uint32_t bufferIndex)
   {
     m_codec = codec;
     m_amlCodec = amlcodec;
@@ -42,7 +42,8 @@ public:
 
   CDVDVideoCodecAmlogic* m_codec;
   std::shared_ptr<CAMLCodec> m_amlCodec;
-  int m_omxPts, m_amlDuration;
+  uint64_t m_omxPts;
+  int m_amlDuration;
   uint32_t m_bufferIndex;
 };
 
@@ -94,14 +95,15 @@ protected:
   double          m_framerate;
   int             m_video_rate;
   float           m_aspect_ratio;
-  mpeg2_sequence *m_mpeg2_sequence;
   double          m_mpeg2_sequence_pts;
-  h264_sequence  *m_h264_sequence;
   double          m_h264_sequence_pts;
   bool            m_has_keyframe;
 
-  CBitstreamParser *m_bitparser;
-  CBitstreamConverter *m_bitstream;
+  std::unique_ptr<mpeg2_sequence> m_mpeg2_sequence;
+  std::unique_ptr<h264_sequence>  m_h264_sequence;
+
+  std::unique_ptr<CBitstreamParser>    m_bitparser;
+  std::unique_ptr<CBitstreamConverter> m_bitstream;
 private:
   std::shared_ptr<CAMLVideoBufferPool> m_videoBufferPool;
   static std::atomic<bool> m_InstanceGuard;

@@ -159,13 +159,17 @@ std::unique_ptr<CTexture> CDVDFileInfo::ExtractThumbToTexture(const CFileItem& f
       int64_t nSeekTo =
           seekToChapter ? demuxer->GetChapterPos(chapterNumber) * 1000 : nTotalLen / 3;
 
+      // Seek to chapter @ 0 not likley to be a very useful result, use 5 sec instead.
+      if (seekToChapter && (nSeekTo == 0)) nSeekTo = 5000;
+
       CLog::LogF(LOGDEBUG, "seeking to pos {}ms (total: {}ms) in {}", nSeekTo, nTotalLen,
                  redactPath);
 
       if (demuxer->SeekTime(static_cast<double>(nSeekTo), true))
       {
         CDVDVideoCodec::VCReturn iDecoderState = CDVDVideoCodec::VC_NONE;
-        VideoPicture picture = {};
+        VideoPicture picture;
+        picture.Reset();
 
         // num streams * 160 frames, should get a valid frame, if not abort.
         int abort_index = demuxer->GetNrOfStreams() * 160;
@@ -189,6 +193,7 @@ std::unique_ptr<CTexture> CDVDFileInfo::ExtractThumbToTexture(const CFileItem& f
           iDecoderState = CDVDVideoCodec::VC_NONE;
           while (iDecoderState == CDVDVideoCodec::VC_NONE)
           {
+            picture.Reset();
             iDecoderState = pVideoCodec->GetPicture(&picture);
           }
 
@@ -235,6 +240,7 @@ std::unique_ptr<CTexture> CDVDFileInfo::ExtractThumbToTexture(const CFileItem& f
         {
           CLog::LogF(LOGDEBUG, "decode failed in {} after {} packets.", redactPath, packetsTried);
         }
+        picture.Reset();
       }
     }
   }
@@ -257,8 +263,12 @@ bool CDVDFileInfo::CanExtract(const CFileItem& fileItem)
       // per addon instance), pvr recording thumbnail extraction does not work (reliably).
       URIUtils::IsPVRRecording(fileItem.GetDynPath()) ||
       // plugin path not fully resolved
-      URIUtils::IsPlugin(fileItem.GetDynPath()) || URIUtils::IsUPnP(fileItem.GetPath()) ||
-      fileItem.IsInternetStream() || fileItem.IsDiscStub() || fileItem.IsPlayList())
+      URIUtils::IsPlugin(fileItem.GetDynPath()) ||
+      URIUtils::IsUPnP(fileItem.GetPath()) ||
+      (fileItem.IsInternetStream() && // For internet protocol streams - if it is HTTP or FTP and on lan then ok to extract, otherwise not ok.
+       (!((URIUtils::IsFTP(fileItem.GetPath()) || URIUtils::IsHTTP(fileItem.GetPath())) && URIUtils::IsOnLAN(fileItem.GetPath())))) ||
+      fileItem.IsDiscStub() ||
+      fileItem.IsPlayList())
     return false;
 
   // mostly can't extract from discs and files from discs.

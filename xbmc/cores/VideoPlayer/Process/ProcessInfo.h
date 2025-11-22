@@ -10,7 +10,9 @@
 
 #include "cores/VideoPlayer/Buffers/VideoBuffer.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderInfo.h"
+#include "cores/VideoPlayer/DVDStreamInfo.h"
 #include "cores/VideoSettings.h"
+#include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "threads/CriticalSection.h"
 
 #include <atomic>
@@ -66,6 +68,7 @@ public:
   std::string GetAudioDecoderName();
   void SetAudioChannels(const std::string &channels);
   std::string GetAudioChannels();
+  std::string GetAudioChannelsSink();
   void SetAudioSampleRate(int sampleRate);
   int GetAudioSampleRate();
   void SetAudioBitsPerSample(int bitsPerSample);
@@ -103,8 +106,6 @@ public:
   bool IsTempoAllowed(float tempo);
   virtual float MinTempoPlatform();
   virtual float MaxTempoPlatform();
-  void SetLevelVQ(int level);
-  int GetLevelVQ();
   void SetGuiRender(bool gui);
   bool GetGuiRender();
   void SetVideoRender(bool video);
@@ -159,7 +160,6 @@ protected:
   // player states
   CCriticalSection m_stateSection;
   bool m_stateSeeking;
-  std::atomic_int m_levelVQ;
   std::atomic_bool m_renderGuiLayer;
   std::atomic_bool m_renderVideoLayer;
   float m_tempo;

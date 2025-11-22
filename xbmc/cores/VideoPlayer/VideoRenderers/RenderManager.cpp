@@ -23,8 +23,6 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "threads/SingleLock.h"
-#include "utils/AMLUtils.h"
-#include "utils/StreamDetails.h"
 #include "utils/StringUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
@@ -48,7 +46,8 @@ unsigned int CRenderManager::m_nextCaptureId = 0;
 
 CRenderManager::CRenderManager(CDVDClock &clock, IRenderMsg *player) :
   m_dvdClock(clock),
-  m_playerPort(player)
+  m_playerPort(player),
+  m_dataCacheCore(CServiceBroker::GetDataCacheCore())
 {
 }
 
@@ -82,7 +81,7 @@ void CRenderManager::SetVideoSettings(const CVideoSettings& settings)
   }
 }
 
-bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers)
+bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned int orientation, StreamHdrType hdrType, int buffers)
 {
 
   // check if something has changed
@@ -206,13 +205,13 @@ bool CRenderManager::Configure()
     m_queued.clear();
     m_discard.clear();
     m_free.clear();
-    m_presentsource = -1;
+    m_presentstarted = false;
+    m_presentsource = 0;
     m_presentsourcePast = -1;
     for (int i = 0; i < m_QueueSize; i++)
       m_free.push_back(i);
 
     m_bRenderGUI = true;
-    m_videostarted = std::chrono::system_clock::now();
     m_bTriggerUpdateResolution = true;
     m_presentstep = PRESENT_IDLE;
     m_presentpts = DVD_NOPTS_VALUE;
@@ -226,6 +225,8 @@ bool CRenderManager::Configure()
     m_overlays.SetStereoMode(m_picture.stereoMode);
 
     m_renderState = STATE_CONFIGURED;
+
+    UpdateResolution(true);
 
     CLog::Log(LOGDEBUG, "CRenderManager::Configure - {}", m_QueueSize);
   }
@@ -367,7 +368,9 @@ void CRenderManager::PreInit()
     CreateRenderer();
   }
 
-  UpdateLatencyTweak();
+  m_debugRenderer.Initialize();
+
+  UpdateVideoLatencyTweak();
 
   m_QueueSize   = 2;
   m_QueueSkip   = 0;
@@ -433,7 +436,8 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
         m_queued.clear();
         m_discard.clear();
         m_free.clear();
-        m_presentsource = -1;
+        m_presentstarted = false;
+        m_presentsource = 0;
         m_presentsourcePast = -1;
         m_presentstep = PRESENT_IDLE;
         for (int i = 0; i < m_QueueSize; i++)
@@ -646,8 +650,7 @@ void CRenderManager::ManageCaptures()
 
 void CRenderManager::RenderCapture(CRenderCapture* capture)
 {
-  int index = (m_presentsource != -1) ? m_presentsource : 0;
-  if (!m_pRenderer || !m_pRenderer->RenderCapture(index, capture))
+  if (!m_pRenderer || !m_pRenderer->RenderCapture(m_presentsource, capture))
     capture->SetState(CAPTURESTATE_FAILED);
 }
 
@@ -701,7 +704,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
   {
     std::unique_lock<CCriticalSection> lock(m_statelock);
-    if (m_presentsource == -1 || (m_renderState != STATE_CONFIGURED))
+    if (!m_presentstarted || (m_renderState != STATE_CONFIGURED))
       return;
   }
 
@@ -748,14 +751,20 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
         double refreshrate, clockspeed;
         int missedvblanks;
-        info.vsync = StringUtils::Format("VSyncOff: {:.1f} latency: {:.3f}  ",
-                                         m_clockSync.m_syncOffset / 1000,
-                                         DVD_TIME_TO_MSEC(m_displayLatency) / 1000.0f);
+
+        info.vsync = StringUtils::Format("VSync Off:{:.1f}", (m_clockSync.m_syncOffset / 1000));
+
         if (m_dvdClock.GetClockInfo(missedvblanks, clockspeed, refreshrate))
-        {
           info.vsync += StringUtils::Format("VSync: refresh:{:.3f} missed:{} speed:{:.3f}%",
-                                            refreshrate, missedvblanks, clockspeed * 100);
-        }
+                                            refreshrate, missedvblanks, (clockspeed * 100));
+
+        double videoLatency = (m_videoLatencyTweak / 1000.0);
+        double audioLatency = (m_audioLatencyTweak / 1000.0);
+        double videoDelay = (-m_videoDelay / 1000.0);
+        double totalLatency = videoLatency + audioLatency + videoDelay;
+
+        info.latency = StringUtils::Format("Latency: video:{:.3f} audio:{:.3f} user:{:.3f} total:{:.3f}",
+                                            videoLatency, audioLatency, videoDelay, totalLatency);
 
         m_debugRenderer.SetInfo(info);
       }
@@ -800,9 +809,8 @@ bool CRenderManager::IsGuiLayer()
     if (!m_pRenderer)
       return false;
 
-    int index = (m_presentsource != -1) ? m_presentsource : 0;
     if ((m_pRenderer->IsGuiLayer() && IsPresenting()) ||
-        m_renderedOverlay || m_overlays.HasOverlay(index))
+        m_renderedOverlay || m_overlays.HasOverlay(m_presentsource))
       return true;
 
     if (m_renderDebug && m_debugTimer.IsTimePast())
@@ -876,7 +884,7 @@ void CRenderManager::PresentBlend(bool clear, DWORD flags, DWORD alpha)
   }
 }
 
-void CRenderManager::UpdateLatencyTweak()
+void CRenderManager::UpdateVideoLatencyTweak()
 {
   float fps = CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS();
   const RESOLUTION_INFO res = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
@@ -884,48 +892,53 @@ void CRenderManager::UpdateLatencyTweak()
   float refresh = fps;
   if (CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution() == RES_WINDOW)
     refresh = 0; // No idea about refresh rate when windowed, just get the default latency
-  m_latencyTweak = static_cast<double>(
-      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
-          refresh, res.iScreenHeight));
 
-  CLog::Log(LOGDEBUG, "CRenderManager::UpdateLatencyTweak - got latency tweak of {:.1f}ms with a refresh rate of {:.3f}Hz and resolution of {:d}",
-    m_latencyTweak, refresh, res.iScreenHeight);
+  m_videoLatencyTweak = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetVideoLatencyTweak(refresh, res.iScreenHeight);
 }
 
-void CRenderManager::UpdateResolution()
+void CRenderManager::UpdateResolution(bool force)
 {
+  std::unique_lock<CCriticalSection> lock(m_resolutionlock);
+
   if (m_bTriggerUpdateResolution)
   {
-    if (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() && CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot())
+    if (force ||
+        (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() &&
+         CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot()))
     {
-      auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - m_videostarted);
-      if (aml_video_started() || elapsed > 1000ms)
-      {
-        RENDER_STEREO_MODE user_stereo_mode =
-          CServiceBroker::GetGUI()->GetStereoscopicsManager().GetStereoModeByUser();
-        STEREOSCOPIC_PLAYBACK_MODE playbackMode =
-          static_cast<STEREOSCOPIC_PLAYBACK_MODE>(CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE));
-        if (!m_picture.stereoMode.empty() &&
-            playbackMode == STEREOSCOPIC_PLAYBACK_MODE_ASK &&
-            user_stereo_mode == RENDER_STEREO_MODE_UNDEFINED)
-          m_bTriggerUpdateResolution = false;
-
-        if (m_bTriggerUpdateResolution &&
-          CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
-        {
-          RESOLUTION res = CResolutionUtils::ChooseBestResolution(
-              m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
-          CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
-          CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
-          UpdateLatencyTweak();
-          if (m_pRenderer)
-            m_pRenderer->Update();
-        }
+      RENDER_STEREO_MODE user_stereo_mode =
+        CServiceBroker::GetGUI()->GetStereoscopicsManager().GetStereoModeByUser();
+      STEREOSCOPIC_PLAYBACK_MODE playbackMode =
+        static_cast<STEREOSCOPIC_PLAYBACK_MODE>(CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_STEREOSCOPICPLAYBACKMODE));
+      if (!m_picture.stereoMode.empty() &&
+          playbackMode == STEREOSCOPIC_PLAYBACK_MODE_ASK &&
+          user_stereo_mode == RENDER_STEREO_MODE_UNDEFINED)
         m_bTriggerUpdateResolution = false;
-        m_playerPort->VideoParamsChange();
+      if (m_bTriggerUpdateResolution &&
+          CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
+      {
+
+        StreamHdrType actual_hdrType = (m_hdrType_override != StreamHdrType::HDR_TYPE_NONE) ? m_hdrType_override : m_picture.hdrType;
+
+        RESOLUTION res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+        CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(actual_hdrType);
+        CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
+        UpdateVideoLatencyTweak();
+
+        if (m_pRenderer)
+          m_pRenderer->Update();
       }
+      m_bTriggerUpdateResolution = false;
+      m_hdrType_override = StreamHdrType::HDR_TYPE_NONE;
+      m_playerPort->VideoParamsChange();
     }
   }
+}
+
+void CRenderManager::TriggerUpdateResolutionHdr(StreamHdrType hdrType)
+{
+  m_hdrType_override = hdrType;
+  m_bTriggerUpdateResolution = true;
 }
 
 void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode)
@@ -937,32 +950,19 @@ void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, s
     m_picture.iHeight = height;
     m_picture.stereoMode = stereomode;
   }
-  m_videostarted = std::chrono::system_clock::now();
   m_bTriggerUpdateResolution = true;
 }
 
 void CRenderManager::ToggleDebug()
 {
-  bool isEnabled = !m_renderDebug;
-  if (isEnabled)
-    m_debugRenderer.Initialize();
-  else
-    m_debugRenderer.Dispose();
-
-  m_renderDebug = isEnabled;
+  m_renderDebug = !m_renderDebug;
   m_debugTimer.SetExpired();
   m_renderDebugVideo = false;
 }
 
 void CRenderManager::ToggleDebugVideo()
 {
-  bool isEnabled = !m_renderDebug;
-  if (isEnabled)
-    m_debugRenderer.Initialize();
-  else
-    m_debugRenderer.Dispose();
-
-  m_renderDebug = isEnabled;
+  m_renderDebug = !m_renderDebug;
   m_debugTimer.SetExpired();
   m_renderDebugVideo = true;
 }
@@ -988,7 +988,6 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
 
     m_pRenderer->AddVideoPicture(picture, index);
   }
-
 
   // set fieldsync if picture is interlaced
   EFIELDSYNC displayField = FS_NONE;
@@ -1102,7 +1101,6 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
                                   std::chrono::milliseconds timeout)
 {
   std::unique_lock<CCriticalSection> lock(m_presentlock);
-
   // check if gui is active and discard buffer if not
   // this keeps videoplayer going
   if (!m_bRenderGUI || !g_application.GetRenderGUI())
@@ -1157,18 +1155,16 @@ void CRenderManager::PrepareNextRender()
   if (!m_showVideo && !m_forceNext)
     return;
 
-  double frameOnScreen = m_dvdClock.GetClock();
   double frametime = 1.0 /
                      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) *
                      DVD_TIME_BASE;
 
-  m_displayLatency = DVD_MSEC_TO_TIME(
-      m_latencyTweak +
-      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetDisplayLatency()) -
-      m_videoDelay -
-      static_cast<double>(CServiceBroker::GetWinSystem()->GetFrameLatencyAdjustment()));
+  double renderPts = m_dvdClock.GetClock();
 
-  double renderPts = frameOnScreen + m_displayLatency;
+  // Make sure the queued are sorted by pts and no duplicates.
+  std::sort(m_queued.begin(), m_queued.end(), [this](int a, int b) { return m_Queue[a].pts < m_Queue[b].pts; });
+  auto last = std::unique(m_queued.begin(), m_queued.end());
+  m_queued.erase(last, m_queued.end());
 
   double nextFramePts = m_Queue[m_queued.front()].pts;
   if (m_dvdClock.GetClockSpeed() < 0)
@@ -1178,7 +1174,7 @@ void CRenderManager::PrepareNextRender()
   {
     double err = fmod(renderPts - nextFramePts, frametime);
     m_clockSync.m_error += err;
-    m_clockSync.m_errCount ++;
+    m_clockSync.m_errCount++;
     if (m_clockSync.m_errCount > 30)
     {
       double average = m_clockSync.m_error / m_clockSync.m_errCount;
@@ -1196,9 +1192,9 @@ void CRenderManager::PrepareNextRender()
   }
 
   CLog::LogFC(LOGDEBUG, LOGAVTIMING,
-              "frameOnScreen: {:.3f} renderPts: {:.3f} nextFramePts: {:.3f} -> diff: {:.3f}  render: {:d} "
+              "renderPts: {:.3f} renderPts: {:.3f} nextFramePts: {:.3f} -> diff: {:.3f}  render: {:d} "
               "forceNext: {:d}",
-              frameOnScreen / DVD_TIME_BASE, renderPts / DVD_TIME_BASE, nextFramePts / DVD_TIME_BASE,
+              renderPts / DVD_TIME_BASE, renderPts / DVD_TIME_BASE, nextFramePts / DVD_TIME_BASE,
               (renderPts - nextFramePts) / DVD_TIME_BASE, renderPts >= nextFramePts, m_forceNext);
 
   bool combined = false;
@@ -1209,7 +1205,7 @@ void CRenderManager::PrepareNextRender()
     combined = true;
   }
 
-  if (renderPts >= nextFramePts || m_forceNext)
+  if ((renderPts >= nextFramePts) || m_forceNext)
   {
     // see if any future queued frames are already due
     auto iter = m_queued.begin();
@@ -1230,8 +1226,14 @@ void CRenderManager::PrepareNextRender()
       ++iter;
     }
 
+    // push back present source index before other lates to keep order
+    if (m_presentstarted) m_discard.push_back(m_presentsource);
+
+    float speed = m_dataCacheCore.GetSpeed();
+    bool playing = ((speed > 0.99f) && (speed < 1.01f));
+
     // skip late frames
-    while (m_queued.front() != idx)
+    while ((m_queued.front() != idx) && (m_queued.size() > 2))
     {
       m_presentsourcePast = m_queued.front();
       m_queued.pop_front();
@@ -1239,10 +1241,12 @@ void CRenderManager::PrepareNextRender()
       if (m_presentsourcePast >= 0)
       {
         m_discard.push_back(m_presentsourcePast);
-        m_QueueSkip++;
+        if (playing) m_QueueSkip++;
         m_presentsourcePast = -1;
       }
     }
+
+    m_QueueSkip = std::round(m_QueueSkip * 0.85);
 
     if (lateframes)
       m_lateframes += lateframes;
@@ -1250,11 +1254,10 @@ void CRenderManager::PrepareNextRender()
       m_lateframes = 0;
 
     m_presentstep = PRESENT_FLIP;
-    if (m_presentsource != -1)
-      m_discard.push_back(m_presentsource);
     m_presentsource = idx;
+    m_presentstarted = true;
     m_queued.pop_front();
-    m_presentpts = m_Queue[m_presentsource].pts - m_displayLatency;
+    m_presentpts = m_Queue[m_presentsource].pts;
     m_presentevent.notifyAll();
 
     m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
@@ -1265,8 +1268,9 @@ void CRenderManager::PrepareNextRender()
     m_presentstep = PRESENT_FLIP;
     m_presentsourcePast = m_presentsource;
     m_presentsource = m_queued.front();
+    m_presentstarted = true;
     m_queued.pop_front();
-    m_presentpts = m_Queue[m_presentsource].pts - m_displayLatency - frametime / 2;
+    m_presentpts = m_Queue[m_presentsource].pts - frametime / 2;
     m_presentevent.notifyAll();
   }
 }
@@ -1319,7 +1323,7 @@ void CRenderManager::CheckEnableClockSync()
     diff = std::abs(std::round(diff) - diff);
   }
 
-  if (diff && diff < 0.0005)
+  if (diff && (diff < 0.0005))
   {
     m_clockSync.m_enabled = true;
   }

@@ -250,6 +250,9 @@ class CJobQueue;
 class CVideoPlayer : public IPlayer, public CThread, public IVideoPlayer,
                      public IDispResource, public IRenderLoop, public IRenderMsg
 {
+private:  
+  void SetAVChange(std::string from);
+  
 public:
   explicit CVideoPlayer(IPlayerCallback& callback);
   ~CVideoPlayer() override;
@@ -341,6 +344,7 @@ public:
   void SetRenderViewMode(int mode, float zoom, float par, float shift, bool stretch) override;
   float GetRenderAspectRatio() const override;
   void TriggerUpdateResolution() override;
+  void TriggerUpdateResolutionHdr(StreamHdrType hdrType) override;
   bool IsRenderingVideo() const override;
   bool Supports(EINTERLACEMETHOD method) const override;
   EINTERLACEMETHOD GetDeinterlacingMethodDefault() const override;
@@ -589,4 +593,6 @@ protected:
   bool m_UpdateStreamDetails;
 
   std::atomic<bool> m_displayLost;
+
+  double m_messageQueueTimeSize{0.0};
 };

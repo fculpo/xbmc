@@ -25,12 +25,11 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
-#include "settings/lib/SettingsManager.h"
 #include "guilib/DispResource.h"
-#include "guilib/LocalizeStrings.h"
 #include "utils/AMLUtils.h"
 #include "utils/log.h"
 #include "threads/SingleLock.h"
+#include "DolbyVisionAML.h"
 
 #include "platform/linux/SysfsPath.h"
 
@@ -65,22 +64,12 @@ CWinSystemAmlogic::CWinSystemAmlogic()
   m_libinput->Start();
 }
 
-void CWinSystemAmlogic::SettingOptionsComponentsFiller(const SettingConstPtr& setting,
-                                                 std::vector<IntegerSettingOption>& list,
-                                                 int& current,
-                                                 void* data)
-{
-  int dv_cap = aml_display_get_dv_cap();
-
-  if ((dv_cap & DV_RGB_444_8BIT) != 0)
-    list.emplace_back(g_localizeStrings.Get(14426), AML_DV_TV_LED);
-
-  if ((dv_cap & LL_YCbCr_422_12BIT) != 0)
-    list.emplace_back(g_localizeStrings.Get(14427), AML_DV_PLAYER_LED);
-}
-
 bool CWinSystemAmlogic::InitWindowSystem()
 {
+  // Setup DV UI Elements etc.
+  m_dolbyVisionAML = std::make_unique<CDolbyVisionAML>();
+  if (!m_dolbyVisionAML->Setup()) m_dolbyVisionAML.reset();
+
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
 
   if (settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_NOISEREDUCTION))
@@ -103,42 +92,6 @@ bool CWinSystemAmlogic::InitWindowSystem()
   {
     CLog::Log(LOGDEBUG, "CWinSystemAmlogic::InitWindowSystem -- setting hdr2sdr mode to {:d}", hdr2sdr);
     CSysfsPath("/sys/module/am_vecm/parameters/hdr_mode", 1);
-  }
-
-  if (!aml_support_dolby_vision() || !aml_display_support_dv())
-  {
-    auto setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE);
-    if (setting)
-    {
-      setting->SetVisible(false);
-      settings->SetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE, false);
-    }
-
-    setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED);
-    if (setting)
-    {
-      setting->SetVisible(false);
-      settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, AML_DV_TV_LED);
-    }
-  }
-  else
-  {
-    CServiceBroker::GetSettingsComponent()->GetSettings()->
-      GetSettingsManager()->RegisterSettingOptionsFiller("dv_led_modes", SettingOptionsComponentsFiller);
-
-    int dv_cap = aml_display_get_dv_cap();
-    AML_DISPLAY_DV_LED old_value = static_cast<AML_DISPLAY_DV_LED>(
-      settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED));
-    AML_DISPLAY_DV_LED new_value = old_value;
-
-    if (old_value == AML_DV_TV_LED && !(dv_cap & DV_RGB_444_8BIT))
-      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & LL_YCbCr_422_12BIT) != 0 ? AML_DV_PLAYER_LED : -1);
-
-    if (old_value == AML_DV_PLAYER_LED && !(dv_cap & LL_YCbCr_422_12BIT))
-      new_value = static_cast<AML_DISPLAY_DV_LED>((dv_cap & DV_RGB_444_8BIT) != 0 ? AML_DV_TV_LED : -1);
-
-    if (new_value != old_value)
-      settings->SetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED, new_value);
   }
 
   if (((LINUX_VERSION_CODE >> 16) & 0xFF) < 5)
@@ -170,12 +123,12 @@ bool CWinSystemAmlogic::InitWindowSystem()
     settings->SetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK, false);
   }
 
-  // Close the OpenVFD splash and switch the display into time mode.
-  CSysfsPath("/tmp/openvfd_service", 0);
-
   // kill a running animation
   CLog::Log(LOGDEBUG,"CWinSystemAmlogic: Sending SIGUSR1 to 'splash-image'");
   std::system("killall -s SIGUSR1 splash-image &> /dev/null");
+
+  // Close the OpenVFD splash and switch the display into time mode.
+  CSysfsPath("/tmp/openvfd_service", 0);
 
   return CWinSystemBase::InitWindowSystem();
 }
@@ -228,6 +181,9 @@ bool CWinSystemAmlogic::CreateNewWindow(const std::string& name,
     }
   }
 
+  // Make sure DV Display activates if enabled - TODO: Why needed?
+  aml_dv_display_trigger();
+
   m_bWindowCreated = true;
   return true;
 }
@@ -259,7 +215,7 @@ void CWinSystemAmlogic::UpdateResolutions()
   /* ProbeResolutions includes already all resolutions.
    * Only get desktop resolution so we can replace xbmc's desktop res
    */
-  if (aml_get_native_resolution(&curDisplay))
+  if (aml_get_native_resolution(curDisplay))
   {
     resDesktop = curDisplay;
   }
@@ -346,6 +302,11 @@ bool CWinSystemAmlogic::IsHDRDisplay()
 CHDRCapabilities CWinSystemAmlogic::GetDisplayHDRCapabilities() const
 {
   return m_hdr_caps;
+}
+
+float CWinSystemAmlogic::GetDisplayLatency()
+{
+  return 0.0f; 
 }
 
 float CWinSystemAmlogic::GetGuiSdrPeakLuminance() const

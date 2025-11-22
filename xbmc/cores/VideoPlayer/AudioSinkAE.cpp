@@ -14,6 +14,8 @@
 #include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/AudioEngine/Utils/AEAudioFormat.h"
 #include "cores/AudioEngine/Utils/AEStreamData.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
@@ -31,6 +33,7 @@ CAudioSinkAE::CAudioSinkAE(CDVDClock *clock) : m_pClock(clock)
   m_timeOfPts = 0.0; //silence coverity uninitialized warning, is set elsewhere
   m_syncError = 0.0;
   m_syncErrorTime = 0;
+  m_addPacketUnlockTime = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_audioAddPacketUnlockTime;
 }
 
 CAudioSinkAE::~CAudioSinkAE()
@@ -147,7 +150,7 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
     }
 
     lock.unlock();
-    KODI::TIME::Sleep(1ms);
+    usleep(m_addPacketUnlockTime);
     lock.lock();
   } while (!m_bAbort);
 
@@ -355,7 +358,8 @@ CAEStreamInfo::DataType CAudioSinkAE::GetPassthroughStreamType(AVCodecID codecId
     case AV_CODEC_ID_DTS:
       if (profile == FF_PROFILE_DTS_HD_HRA)
         format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_DTSHD;
-      else if (profile == FF_PROFILE_DTS_HD_MA)
+      else if (profile == FF_PROFILE_DTS_HD_MA || profile == FF_PROFILE_DTS_HD_MA_X ||
+               profile == FF_PROFILE_DTS_HD_MA_X_IMAX)
         format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
       else
         format.m_streamInfo.m_type = CAEStreamInfo::STREAM_TYPE_DTSHD_CORE;

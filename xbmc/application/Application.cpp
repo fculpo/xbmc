@@ -137,6 +137,7 @@
 #include "utils/StringUtils.h"
 #include "utils/SystemInfo.h"
 #include "utils/TimeUtils.h"
+#include "utils/AMLUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
 #include "utils/XTimeUtils.h"
@@ -2150,11 +2151,7 @@ bool CApplication::Stop(int exitCode)
     CServiceBroker::GetJobManager()->CancelJobs();
 
     // stop scanning before we kill the network and so on
-    if (CMusicLibraryQueue::GetInstance().IsRunning())
-      CMusicLibraryQueue::GetInstance().CancelAllJobs();
-
-    if (CVideoLibraryQueue::GetInstance().IsRunning())
-      CVideoLibraryQueue::GetInstance().CancelAllJobs();
+    CancelUpdateLibraries();
 
     CServiceBroker::GetAppMessenger()->Cleanup();
 
@@ -2590,6 +2587,7 @@ bool CApplication::PlayFile(CFileItem item, const std::string& player, bool bRes
 
   const auto appVolume = GetComponent<CApplicationVolumeHandling>();
   appPlayer->OpenFile(item, options, m_ServiceManager->GetPlayerCoreFactory(), player, *this);
+  aml_reset_audio_from_player_open();
   appPlayer->SetVolume(appVolume->GetVolumeRatio());
   appPlayer->SetMute(appVolume->IsMuted());
 
@@ -3587,6 +3585,19 @@ void CApplication::UpdateLibraries()
     CMusicLibraryQueue::GetInstance().ScanLibrary(
         "", MUSIC_INFO::CMusicInfoScanner::SCAN_NORMAL,
         !settings->GetBool(CSettings::SETTING_MUSICLIBRARY_BACKGROUNDUPDATE));
+  }
+}
+
+void CApplication::CancelUpdateLibraries()
+{
+  if (CMusicLibraryQueue::GetInstance().IsRunning())
+  {
+    CMusicLibraryQueue::GetInstance().CancelAllJobs();
+  }
+
+  if (CVideoLibraryQueue::GetInstance().IsRunning())
+  {
+    CVideoLibraryQueue::GetInstance().CancelAllJobs();
   }
 }
 

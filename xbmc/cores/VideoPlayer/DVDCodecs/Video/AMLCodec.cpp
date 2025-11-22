@@ -29,6 +29,7 @@
 
 #include "platform/linux/SysfsPath.h"
 
+#include <algorithm>
 #include <unistd.h>
 #include <queue>
 #include <vector>
@@ -294,10 +295,6 @@ typedef struct hdr_buf {
     char *data;
     int size;
 } hdr_buf_t;
-
-#define FLAG_FORCE_DV_LL        (unsigned int)(0x4000)
-#define DOLBY_VISION_LL_DISABLE (unsigned int)(0)
-#define DOLBY_VISION_LL_YUV422  (unsigned int)(1)
 
 typedef struct am_packet {
     AVPacket      avpkt;
@@ -1803,7 +1800,7 @@ static inline int calc_chunk_size(int size)
 //drivers/frame_provider/decoder/utils/vdec_input.c
 #define MIN_FRAME_PADDING_SIZE ((int)(L1_CACHE_BYTES))
 
-  int need_padding_size = MIN_FRAME_PADDING_SIZE;
+  auto need_padding_size = MIN_FRAME_PADDING_SIZE;
   if (size < PAGE_SIZE) {
     need_padding_size += PAGE_SIZE - ((size + need_padding_size) & (PAGE_SIZE - 1));
   } else {
@@ -1815,14 +1812,16 @@ static inline int calc_chunk_size(int size)
 }
 
 /*************************************************************************/
-CAMLCodec::CAMLCodec(CProcessInfo &processInfo)
+CAMLCodec::CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints)
   : m_opened(false)
   , m_speed(DVD_PLAYSPEED_NORMAL)
   , m_cur_pts(DVD_NOPTS_VALUE)
   , m_last_pts(DVD_NOPTS_VALUE)
   , m_bufferIndex(-1)
   , m_state(0)
+  , m_hints(hints)
   , m_processInfo(processInfo)
+  , m_dataCacheCore(CServiceBroker::GetDataCacheCore())
 {
   am_private = new am_private_t();
   m_dll = new DllLibAmCodec;
@@ -1858,7 +1857,65 @@ int CAMLCodec::GetAmlDuration() const
   return am_private ? (am_private->video_rate * PTS_FREQ) / UNIT_FREQ : 0;
 };
 
-bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, enum ELType dovi_el_type)
+std::string CAMLCodec::IntToFourCCString(unsigned int value) const
+{
+  char bytes[4];
+  bytes[0] = value & 0xFF;
+  bytes[1] = (value >> 8) & 0xFF;
+  bytes[2] = (value >> 16) & 0xFF;
+  bytes[3] = (value >> 24) & 0xFF;
+
+  std::string fourCCString(bytes, 4);
+
+  for (auto& c : fourCCString) {
+      c = std::tolower(c, std::locale());
+  }
+
+  return fourCCString;
+}
+
+std::string CAMLCodec::GetDoViCodecFourCC(unsigned int codec_tag) const
+{
+  if (codec_tag == 0) return "----";
+
+  std::string fourCC = IntToFourCCString(codec_tag);
+
+  // some files don't have dvhe or dvh1 tag set up but have Dolby Vision side data
+  // page 10, table 2 from https://professional.dolby.com/siteassets/content-creation/dolby-vision-for-content-creators/dolby-vision-streams-within-the-http-live-streaming-format-v2.0-13-november-2018.pdf
+  if (fourCC == "hev1") return "dvhe";
+  if (fourCC == "hvc1") return "dvh1";
+  if (fourCC == "avc3") return "dvav";
+  if (fourCC == "avc1") return "dva1";
+  if (fourCC == "vvc1") return "dvc1";
+  if (fourCC == "vvi1") return "dvi1";
+
+  return fourCC;
+}
+
+void CAMLCodec::SetProcessInfoVideoDetails() 
+{
+  m_dataCacheCore.SetVideoHdrType(m_hints.hdrType);
+  m_dataCacheCore.SetVideoColorSpace(m_hints.colorSpace);
+  m_dataCacheCore.SetVideoColorRange(m_hints.colorRange);
+  m_dataCacheCore.SetVideoColorPrimaries(m_hints.colorPrimaries);
+  m_dataCacheCore.SetVideoColorTransferCharacteristic(m_hints.colorTransferCharacteristic);
+
+  if (m_hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) 
+  {
+    m_dataCacheCore.SetVideoDoViCodecFourCC(GetDoViCodecFourCC(m_hints.codec_tag));
+
+    if (m_hints.dovi_el_type == DOVIELType::TYPE_FEL)
+      m_dataCacheCore.SetVideoBitDepth(12); // 12 bit for FEL (once DV processed)
+    else
+      m_dataCacheCore.SetVideoBitDepth(m_hints.bitdepth);
+  }
+  else
+  {
+    m_dataCacheCore.SetVideoBitDepth(m_hints.bitdepth);
+  }
+}
+
+bool CAMLCodec::OpenDecoder()
 {
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_drain = false;
@@ -1868,11 +1925,16 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, enum ELType dovi_el_type)
   m_contrast = -1;
   m_brightness = -1;
   m_vadj1_enabled = false;
-  m_hints = hints;
+  CDVDStreamInfo &hints = m_hints;  // Fudge to avoid large chnage delta renaming hints to m_hints.
   m_state = 0;
   m_hints.pClock = hints.pClock;
   m_tp_last_frame = std::chrono::system_clock::now();
   m_decoder_timeout = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderTimeout;
+  m_decoder_bypass_buffer_ready = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderBypassBufferReady;
+  m_decoder_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderBuffer;
+  m_decoder_stream_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderStreamBuffer;
+  m_decoder_minimum_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderMinimumBuffer;
+  m_decoder_minimum_stream_buffer = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoDecoderMinimumStreamBuffer;
   m_buffer_level_ready = false;
 
   if (!OpenAmlVideo(hints))
@@ -1975,8 +2037,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, enum ELType dovi_el_type)
     am_private->video_codec_type = codec_tag_to_vdec_type(am_private->video_codec_id);
 
   CLog::Log(LOGDEBUG, "CAMLCodec::OpenDecoder "
-    "hints.width({:d}), hints.height({:d}), hints.codec({:d}), hints.codec_tag({:d})",
-    hints.width, hints.height, hints.codec, hints.codec_tag);
+    "hints.width({:d}), hints.height({:d}), hints.codec({:d}), hints.codec_tag({:d}), hints.bitdepth({:d})",
+    hints.width, hints.height, hints.codec, hints.codec_tag, hints.bitdepth);
   CLog::Log(LOGDEBUG, "CAMLCodec::OpenDecoder hints.fpsrate({:d}), hints.fpsscale({:d}), video_rate({:d})",
     hints.fpsrate, hints.fpsscale, am_private->video_rate);
   CLog::Log(LOGDEBUG, "CAMLCodec::OpenDecoder hints.aspect({:f}), video_ratio.num({:d}), video_ratio.den({:d})",
@@ -1987,12 +2049,9 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, enum ELType dovi_el_type)
   std::string hdrType = CStreamDetails::HdrTypeToString(hints.hdrType);
   if (hdrType.size())
     CLog::Log(LOGDEBUG, "CAMLCodec::OpenDecoder hdr type: {}", hdrType);
-
   if (hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
-    CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder DOVI: version {:d}.{:d}, profile {:d}{}",
-      hints.dovi.dv_version_major, hints.dovi.dv_version_minor, hints.dovi.dv_profile,
-      (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7) ?
-     ((dovi_el_type == ELType::TYPE_FEL) ? ", full enhancement layer" : ", minimum enhancement layer") : "");
+    CLog::Log(LOGDEBUG, "CAMLCodec::OpenDecoder DOVI: version {:d}.{:d}, profile {:d}, el type {:d}",
+      hints.dovi.dv_version_major, hints.dovi.dv_version_minor, hints.dovi.dv_profile, hints.dovi_el_type);
 
   m_processInfo.SetVideoDAR(hints.aspect);
   CLog::Log(LOGDEBUG, "CAMLCodec::OpenDecoder decoder timeout: {:d}s",
@@ -2013,72 +2072,26 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, enum ELType dovi_el_type)
   am_private->gcodec.dec_mode    = STREAM_TYPE_FRAME;
   am_private->gcodec.video_path  = FRAME_BASE_PATH_AMLVIDEO_AMVIDEO;
 
-  // enable Dolby Vision driver when 'dovi.ko' is available
-  bool device_support_dv(aml_support_dolby_vision());
-  bool user_dv_disable(CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
-  bool dv_enable(device_support_dv && !user_dv_disable &&
-    hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION && (aml_display_support_dv() || hints.dovi.dv_profile == 5));
-  CLog::Log(LOGINFO, "CAMLCodec::OpenDecoder Amlogic device {} support DV, DV is {} by user, display {} support DV, DV system is {}",
-    device_support_dv ? "does" : "does not", user_dv_disable ? "disabled" : "enabled",
-    aml_display_support_dv() ? "does" : "does not", dv_enable ? "enabled" : "disabled");
-  if (dv_enable)
+  aml_dv_open(hints.hdrType, hints.bitdepth);
+
+  // Now have the HDRType resolved, ok to set the transfer pq - so renderer can set the shaders as needed.
+  aml_set_transfer_pq(hints.hdrType, hints.bitdepth);
+
+  SetProcessInfoVideoDetails();
+
+  // Setup Codec for DV Content
+  if ((hints.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) && aml_is_dv_enable())
   {
-    // enable Dolby Vision
-    CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", 'Y');
-
-    // force player led mode when enabled
-    CSysfsPath dolby_vision_flags{"/sys/module/amdolby_vision/parameters/dolby_vision_flags"};
-    CSysfsPath dolby_vision_ll_policy{"/sys/module/amdolby_vision/parameters/dolby_vision_ll_policy"};
-    if (dolby_vision_flags.Exists() && dolby_vision_ll_policy.Exists())
-    {
-      if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_DV_LED) == AML_DV_PLAYER_LED)
-      {
-        dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() | FLAG_FORCE_DV_LL);
-        dolby_vision_ll_policy.Set(DOLBY_VISION_LL_YUV422);
-      }
-      else
-      {
-        dolby_vision_flags.Set(dolby_vision_flags.Get<unsigned int>().value() & ~(FLAG_FORCE_DV_LL));
-        dolby_vision_ll_policy.Set(DOLBY_VISION_LL_DISABLE);
-      }
-    }
-
     am_private->gcodec.dv_enable = 1;
-    if (hints.dovi.dv_profile == 4 || hints.dovi.dv_profile == 7)
+    if (((hints.dovi.dv_profile == 4) || (hints.dovi.dv_profile == 7)) && (hints.dovi_el_type != DOVIELType::TYPE_MEL))
     {
-      if (dovi_el_type != ELType::TYPE_MEL) // use stream path if not MEL
-      {
-        CSysfsPath amdolby_vision_debug{"/sys/class/amdolby_vision/debug"};
-        if (amdolby_vision_debug.Exists())
-          amdolby_vision_debug.Set("enable_fel 1");
-        am_private->gcodec.dec_mode = STREAM_TYPE_STREAM;
-      }
+      aml_dv_enable_fel();                              // Make sure enable fel is set.
+      am_private->gcodec.dec_mode = STREAM_TYPE_STREAM; // Use stream path if FEL
     }
-  }
-  else if (device_support_dv)
-  {
-    // disable Dolby Vision
-    CSysfsPath("/sys/module/amdolby_vision/parameters/dolby_vision_enable", 'N');
   }
 
   // DEC_CONTROL_FLAG_DISABLE_FAST_POC
   CSysfsPath("/sys/module/amvdec_h264/parameters/dec_control", 4);
-
-  CSysfsPath di_debug_flag{"/sys/module/di/parameters/di_debug_flag"};
-  CSysfsPath di_debug{"/sys/class/deinterlace/di0/debug"};
-  if (di_debug_flag.Exists() && di_debug.Exists())
-  {
-    if (am_private->video_format == VFORMAT_VC1) 					/* workaround to fix slowdown VC1 progressive */
-    {
-      di_debug_flag.Set(0x10000);
-      di_debug.Set("di_debug_flag0x10000");
-    }
-    else
-    {
-      di_debug_flag.Set(0);
-      di_debug.Set("di_debug_flag0x0");
-    }
-  }
 
   switch(am_private->video_format)
   {
@@ -2140,10 +2153,6 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, enum ELType dovi_el_type)
       am_private->gcodec.param  = (void*)EXTERNAL_PTS;
       if (m_hints.ptsinvalid)
         am_private->gcodec.param = (void*)(EXTERNAL_PTS | SYNC_OUTSIDE);
-      if (am_private->gcodec.dec_mode == STREAM_TYPE_STREAM)
-        CSysfsPath("/sys/module/amvdec_h265/parameters/nal_skip_policy", 1);
-      else
-        CSysfsPath("/sys/module/amvdec_h265/parameters/nal_skip_policy", 2);
       break;
     case VFORMAT_VP9:
       am_private->gcodec.format = VIDEO_DEC_FORMAT_VP9;
@@ -2197,10 +2206,8 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, enum ELType dovi_el_type)
 
   m_display_rect = CRect(0, 0, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iWidth, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iHeight);
 
-  std::string strScaler;
-  CSysfsPath ppscaler{"/sys/class/ppmgr/ppscaler"};
-  if (ppscaler.Exists())
-    strScaler = ppscaler.Get<std::string>().value();
+  auto strScaler = CSysfsPath("/sys/class/ppmgr/ppscaler").GetOrDefault<std::string>();
+
   if (strScaler.find("enabled") == std::string::npos)     // Scaler not enabled, use screen size
     m_display_rect = CRect(0, 0, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iScreenWidth, CDisplaySettings::GetInstance().GetCurrentResolutionInfo().iScreenHeight);
 
@@ -2270,19 +2277,17 @@ bool CAMLCodec::Enable_vadj1(void)
   return true;
 }
 
-std::string CAMLCodec::GetVfmMap(const std::string &name)
+std::string CAMLCodec::GetVfmMap(const std::string &name) const
 {
-  std::string vfmMap;
-  CSysfsPath map{"/sys/class/vfm/map"};
-  if (map.Exists())
-    vfmMap = map.Get<std::string>().value();
+  auto vfmMap = CSysfsPath("/sys/class/vfm/map").GetOrDefault<std::string>();
+
   std::vector<std::string> sections = StringUtils::Split(vfmMap, '\n');
   std::string sectionMap;
-  for (size_t i = 0; i < sections.size(); ++i)
+  for (const auto& section : sections)
   {
-    if (StringUtils::StartsWith(sections[i], name + " {"))
+    if (StringUtils::StartsWith(section, name + " {"))
     {
-      sectionMap = sections[i];
+      sectionMap = section;
       break;
     }
   }
@@ -2294,7 +2299,7 @@ std::string CAMLCodec::GetVfmMap(const std::string &name)
   return sectionMap;
 }
 
-void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map)
+void CAMLCodec::SetVfmMap(const std::string &name, const std::string &map) const
 {
   CSysfsPath vfm_map{"/sys/class/vfm/map"};
   if (vfm_map.Exists())
@@ -2309,6 +2314,8 @@ void CAMLCodec::CloseDecoder()
   CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder");
 
   SetPollDevice(-1);
+
+  int blackout_policy = aml_blackout_policy(1);
 
   // never leave vcodec ff/rw or paused.
   if (m_speed != DVD_PLAYSPEED_NORMAL)
@@ -2326,27 +2333,20 @@ void CAMLCodec::CloseDecoder()
     free(am_private->vcodec.config);
   // return tsync to default so external apps work
   CSysfsPath("/sys/class/tsync/enable", 1);
-  // disable Dolby Vision driver
-  CSysfsPath dolby_vision_enable{"/sys/module/amdolby_vision/parameters/dolby_vision_enable"};
-  if (dolby_vision_enable.Exists() && StringUtils::EqualsNoCase(dolby_vision_enable.Get<std::string>().value(), "Y"))
-  {
-    CSysfsPath dv_video_on{"/sys/class/amdolby_vision/dv_video_on"};
-    if (dv_video_on.Exists())
-    {
-      std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-      while(dv_video_on.Get<int>().value() == 1 && (std::chrono::system_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
-        usleep(10000); // wait 10ms
-    }
-    dolby_vision_enable.Set('N');
-  }
 
-  CSysfsPath amdolby_vision_debug{"/sys/class/amdolby_vision/debug"};
-  if (amdolby_vision_debug.Exists())
-    amdolby_vision_debug.Set("enable_fel 0");
+  aml_dv_wait_video_off(m_decoder_timeout);
+
+  // restore the saved system blackout_policy value
+  aml_blackout_policy(blackout_policy);
 
   ShowMainVideo(false);
 
   CloseAmlVideo();
+
+  if (am_private->video_format == VFORMAT_HEVC)
+    aml_dv_close(true);
+  else
+    aml_dv_close(false);
 }
 
 void CAMLCodec::CloseAmlVideo()
@@ -2368,15 +2368,6 @@ void CAMLCodec::Reset()
 
   SetPollDevice(-1);
 
-  // set the system blackout_policy to leave the last frame showing
-  int blackout_policy = 0;
-  CSysfsPath video_blackout_policy{"/sys/class/video/blackout_policy"};
-  if (video_blackout_policy.Exists())
-  {
-    blackout_policy = video_blackout_policy.Get<int>().value();
-    video_blackout_policy.Set(0);
-  }
-
   // restore the speed (some amcodec versions require this)
   if (m_speed != DVD_PLAYSPEED_NORMAL)
   {
@@ -2397,10 +2388,6 @@ void CAMLCodec::Reset()
   am_private->am_pkt.codec = &am_private->vcodec;
   pre_header_feeding(am_private, &am_private->am_pkt);
 
-  // restore the saved system blackout_policy value
-  if (video_blackout_policy.Exists())
-    video_blackout_policy.Set(blackout_policy);
-
   // reset some interal vars
   m_cur_pts = DVD_NOPTS_VALUE;
   m_last_pts = DVD_NOPTS_VALUE;
@@ -2418,11 +2405,16 @@ bool CAMLCodec::AddData(uint8_t *pData, size_t iSize, double dts, double pts)
   int chunk_size = calc_chunk_size(iSize);
   float new_buffer_level = GetBufferLevel(chunk_size, data_len, free_len);
   bool streambuffer(am_private->gcodec.dec_mode == STREAM_TYPE_STREAM);
+ 
+  if (!m_buffer_level_ready) {
+    m_buffer_level_ready = m_decoder_bypass_buffer_ready ||
+                           (streambuffer 
+                              ? new_buffer_level > m_decoder_stream_buffer
+                              : new_buffer_level > m_decoder_buffer);
 
-  if (!m_buffer_level_ready)
-  {
-    m_buffer_level_ready = (streambuffer ? (new_buffer_level > 90.0f) : (new_buffer_level > 5.0f));
-    m_minimum_buffer_level = (streambuffer ? 10.0f : 5.0f);
+    m_minimum_buffer_level = streambuffer 
+                               ? m_decoder_minimum_stream_buffer
+                               : m_decoder_minimum_buffer;
   }
 
   if (!m_opened || !pData || free_len == 0 || new_buffer_level >= 100.0f)
@@ -2555,16 +2547,16 @@ int CAMLCodec::m_pollDevice;
 
 int CAMLCodec::PollFrame()
 {
-  std::lock_guard<std::mutex> lock(pollSyncMutex);
+  std::unique_lock<CCriticalSection> lock(pollSyncMutex);
+
   if (m_pollDevice < 0)
     return 0;
 
   struct pollfd codec_poll_fd[1];
-  std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-
   codec_poll_fd[0].fd = m_pollDevice;
   codec_poll_fd[0].events = POLLOUT;
 
+  std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
   poll(codec_poll_fd, 1, 50);
   g_aml_sync_event.Set();
   int elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now() - now).count();
@@ -2574,7 +2566,8 @@ int CAMLCodec::PollFrame()
 
 void CAMLCodec::SetPollDevice(int dev)
 {
-  std::lock_guard<std::mutex> lock(pollSyncMutex);
+  std::unique_lock<CCriticalSection> lock(pollSyncMutex);
+
   m_pollDevice = dev;
 }
 
@@ -2651,7 +2644,35 @@ int CAMLCodec::DequeueBuffer()
   return ret;
 }
 
-CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
+inline double CAMLCodec::CalculatePictureDuration()
+{
+  double rate_duration = static_cast<double>(am_private->video_rate * DVD_TIME_BASE) / UNIT_FREQ;
+
+  if (m_last_pts == DVD_NOPTS_VALUE) return rate_duration;
+  
+  if (m_cur_pts < m_last_pts) 
+  {
+    m_cur_pts = m_last_pts + rate_duration;
+    return rate_duration;
+  }
+
+  double picture_duration = static_cast<double>(m_cur_pts - m_last_pts);
+  double duration_ratio = picture_duration / rate_duration;
+
+  // pts order not correct (sometimes, the pts_server in the kernel returns wrong
+  // pts values => try to compensate). If the difference is too big, then we assume
+  // there's a leap in the stream's pts values
+  if ((m_speed == DVD_PLAYSPEED_NORMAL) &&
+      (duration_ratio < 0.2 || (duration_ratio > 1.5 && duration_ratio < 4.0))) {
+
+    m_cur_pts = m_last_pts + rate_duration;
+    return rate_duration;
+  }
+
+  return picture_duration;
+}
+
+CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture& videoPicture)
 {
   struct vdec_info vi;
   int ret = EAGAIN;
@@ -2663,21 +2684,29 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
 
-  if (!m_drain && m_buffer_level_ready && buffer_level > m_minimum_buffer_level && (ret = DequeueBuffer()) == 0)
+  // add buffer level ready.
+  if (!m_drain && m_buffer_level_ready && (buffer_level > m_minimum_buffer_level) && ((ret = DequeueBuffer()) == 0))
   {
-    pVideoPicture->iFlags = 0;
+    videoPicture.iFlags = 0;
 
     m_minimum_buffer_level = (streambuffer ? m_minimum_buffer_level : 0.0f);
 
     m_tp_last_frame = std::chrono::system_clock::now();
 
-    if (m_last_pts == DVD_NOPTS_VALUE)
-      pVideoPicture->iDuration = static_cast<double>(am_private->video_rate * DVD_TIME_BASE) / UNIT_FREQ;
-    else
-      pVideoPicture->iDuration = static_cast<double>(m_cur_pts - m_last_pts);
+    videoPicture.iDuration = CalculatePictureDuration();
 
-    pVideoPicture->dts = DVD_NOPTS_VALUE;
-    pVideoPicture->pts = static_cast<double>(m_cur_pts);
+    // When FF/RW adjust the iDuration, smaller of original logic or ratio from play speed.
+    if (m_speed != DVD_PLAYSPEED_NORMAL)
+    {
+      const double calculatedDuration = videoPicture.iDuration * static_cast<double>(DVD_PLAYSPEED_NORMAL) / abs(m_speed);
+      const double measuredDuration = static_cast<double>(m_cur_pts - m_last_pts);
+      videoPicture.iDuration = (measuredDuration > 0.0) 
+                                 ? std::min(measuredDuration, calculatedDuration)
+                                 : calculatedDuration;
+    }
+
+    videoPicture.dts = DVD_NOPTS_VALUE;
+    videoPicture.pts = static_cast<double>(m_cur_pts);
 
     m_dll->codec_get_vdec_info(&am_private->vcodec, &vi);
     if  (vi.ratio_control ) {
@@ -2686,13 +2715,13 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     }
 
     CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::GetPicture: index: {:d}, pts: {:.3f}, dur:{:.3f}ms ar:{:.2f} elf:{:d}ms",
-      m_bufferIndex, pVideoPicture->pts / DVD_TIME_BASE, pVideoPicture->iDuration / 1000, m_hints.aspect, elapsed_since_last_frame.count());
+      m_bufferIndex, videoPicture.pts / DVD_TIME_BASE, videoPicture.iDuration / 1000, m_hints.aspect, elapsed_since_last_frame.count());
 
-    pVideoPicture->stereoMode = m_hints.stereo_mode;
-    if (pVideoPicture->stereoMode == "block_lr" && m_processInfo.GetVideoSettings().m_StereoInvert)
-      pVideoPicture->stereoMode = "block_rl";
-    else if (pVideoPicture->stereoMode == "block_rl" && m_processInfo.GetVideoSettings().m_StereoInvert)
-      pVideoPicture->stereoMode = "block_lr";
+    videoPicture.stereoMode = m_hints.stereo_mode;
+    if (videoPicture.stereoMode == "block_lr" && m_processInfo.GetVideoSettings().m_StereoInvert)
+      videoPicture.stereoMode = "block_rl";
+    else if (videoPicture.stereoMode == "block_rl" && m_processInfo.GetVideoSettings().m_StereoInvert)
+      videoPicture.stereoMode = "block_lr";
 
     return CDVDVideoCodec::VC_PICTURE;
   }
@@ -2862,7 +2891,7 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
     case 3:
       {
         float scale = static_cast<float>(dst_rect.Height()) / dst_rect.Width();
-        int diff = (int) ((dst_rect.Height()*scale - dst_rect.Width()) / 2);
+        auto diff = (int) ((dst_rect.Height()*scale - dst_rect.Width()) / 2);
         dst_rect = CRect(DestRect.x1 - diff, DestRect.y1, DestRect.x2 + diff, DestRect.y2);
       }
 

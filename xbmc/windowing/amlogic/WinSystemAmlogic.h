@@ -15,6 +15,7 @@
 #include "threads/SystemClock.h"
 #include "system_egl.h"
 #include <EGL/fbdev_window.h>
+#include "DolbyVisionAML.h"
 
 class IDispResource;
 
@@ -34,17 +35,13 @@ public:
   void UpdateResolutions() override;
   bool IsHDRDisplay() override;
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
+  float GetDisplayLatency() override;
   float GetGuiSdrPeakLuminance() const override;
 
   bool Hide() override;
   bool Show(bool show = true) override;
   virtual void Register(IDispResource *resource);
   virtual void Unregister(IDispResource *resource);
-
-  static void SettingOptionsComponentsFiller(const std::shared_ptr<const CSetting>& setting,
-                                             std::vector<IntegerSettingOption>& list,
-                                             int& current,
-                                             void* data);
 protected:
   std::string m_framebuffer_name;
   EGLDisplay m_nativeDisplay;
@@ -60,4 +57,7 @@ protected:
   std::unique_ptr<CLibInputHandler> m_libinput;
   CHDRCapabilities m_hdr_caps;
   bool m_force_mode_switch;
+
+private:
+  std::unique_ptr<CDolbyVisionAML> m_dolbyVisionAML;
 };

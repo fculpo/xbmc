@@ -62,3 +62,42 @@ std::string CCPUInfo::GetCoresUsageString()
 
   return strCores;
 }
+
+std::string CCPUInfo::GetCoresUsageAltString()
+{
+  std::string strCores;
+
+  if (SupportsCPUUsage())
+  {
+    GetUsedPercentage(); // must call it to recalculate pct values
+
+    if (!m_cores.empty())
+    {
+      bool isFirst = true;
+      for (const auto& core : m_cores)
+      {
+        // if (!isFirst) strCores += " [COLOR FF404040]|[/COLOR] ";
+        if (!isFirst) strCores += " | "; 
+        else isFirst = false;
+
+        unsigned int cpu_percent = static_cast<unsigned int>(std::min(99.99, core.m_usagePercent));
+
+        // if (cpu_percent == 0) 
+        //  strCores += "[COLOR FF404040]00[/COLOR]";
+        // else if (cpu_percent < 10)
+        //  strCores += StringUtils::Format("[COLOR FF404040]0[/COLOR][COLOR FF808080]{:1d}[/COLOR]", cpu_percent);
+        if (cpu_percent < 100) 
+          strCores += StringUtils::Format("{:02d}", cpu_percent);
+        else 
+          strCores += "**";
+          // strCores += "[COLOR=FFFF0000]**[/COLOR]";
+      }
+    }
+    else
+    {
+      strCores += StringUtils::Format("{:02d}", static_cast<int>(m_lastUsedPercentage));
+    }
+  }
+
+  return strCores;
+}

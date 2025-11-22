@@ -10,8 +10,12 @@
 
 #include "ServiceBroker.h"
 #include "cores/DataCacheCore.h"
+#include "cores/AudioEngine/Utils/AEStreamInfo.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/AMLUtils.h"
+
+#include <libavutil/avutil.h>
 
 #include <memory>
 #include <mutex>
@@ -374,6 +378,16 @@ std::string CProcessInfo::GetAudioChannels()
   return m_audioChannels;
 }
 
+std::string CProcessInfo::GetAudioChannelsSink()
+{
+  std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
+
+  if (m_dataCache)
+    return m_dataCache->GetAudioChannelsSink();
+
+  return m_audioChannels;
+}
+
 void CProcessInfo::SetAudioSampleRate(int sampleRate)
 {
   std::unique_lock<CCriticalSection> lock(m_audioCodecSection);
@@ -604,16 +618,6 @@ unsigned int CProcessInfo::GetMaxPassthroughOffSyncDuration() const
   return CServiceBroker::GetSettingsComponent()
       ->GetAdvancedSettings()
       ->m_maxPassthroughOffSyncDuration;
-}
-
-void CProcessInfo::SetLevelVQ(int level)
-{
-  m_levelVQ = level;
-}
-
-int CProcessInfo::GetLevelVQ()
-{
-  return m_levelVQ;
 }
 
 void CProcessInfo::SetGuiRender(bool gui)

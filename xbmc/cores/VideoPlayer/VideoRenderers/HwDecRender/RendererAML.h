@@ -43,7 +43,7 @@ public:
 private:
   void Reset();
 
-  static const int m_numRenderBuffers = 8;
+  static const int m_numRenderBuffers = NUM_BUFFERS;
 
   struct BUFFER
   {
@@ -52,6 +52,6 @@ private:
     int duration;
   } m_buffers[m_numRenderBuffers];
 
-  int m_prevVPts;
+  uint64_t m_prevVPts;
   bool m_bConfigured;
 };

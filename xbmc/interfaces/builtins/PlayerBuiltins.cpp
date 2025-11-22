@@ -41,6 +41,8 @@
 #include "video/VideoUtils.h"
 #include "video/guilib/VideoSelectActionProcessor.h"
 
+#include "utils/AMLUtils.h"
+
 #include <math.h>
 
 #ifdef HAS_OPTICAL_DRIVE
@@ -134,7 +136,10 @@ static int PlayerControl(const std::vector<std::string>& params)
     if (appPlayer->IsPlaying())
     {
       if (appPlayer->GetPlaySpeed() != 1)
+      {
         appPlayer->SetPlaySpeed(1);
+        aml_reset_audio_from_player_pause();
+      }
       else
         appPlayer->Pause();
     }
@@ -479,8 +484,11 @@ int PlayOrQueueMedia(const std::vector<std::string>& params, bool forcePlay)
       if (VIDEO_UTILS::GetItemResumeInformation(item).isResumable)
         item.SetStartOffset(STARTOFFSET_RESUME);
       else
+      {
         item.SetStartOffset(0);
 
+        aml_reset_audio_from_play_from_beginning();
+      }
       askToResume = false;
     }
     else if (StringUtils::EqualsNoCase(params[i], "noresume"))
@@ -488,6 +496,7 @@ int PlayOrQueueMedia(const std::vector<std::string>& params, bool forcePlay)
       // force the item to start at the beginning
       item.SetStartOffset(0);
       askToResume = false;
+      aml_reset_audio_from_play_from_beginning();
     }
     else if (StringUtils::StartsWithNoCase(params[i], "playoffset="))
     {

@@ -10,6 +10,7 @@
 
 #include "DVDCodecs/DVDCodecs.h"
 #include "DVDStreamInfo.h"
+#include "cores/DataCacheCore.h"
 #include "cores/AudioEngine/Utils/PackerMAT.h"
 #include "utils/log.h"
 
@@ -59,11 +60,11 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
       break;
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD_MA:
-      m_codecName = "pt-dtshd";
+      m_codecName = "pt-dtshd_ma";
       break;
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD:
-      m_codecName = "pt-dtshd";
+      m_codecName = "pt-dtshd_hra";
       break;
 
     case CAEStreamInfo::STREAM_TYPE_DTSHD_CORE:
@@ -245,6 +246,9 @@ void CDVDAudioCodecPassthrough::GetData(DVDAudioFrame &frame)
   frame.bits_per_sample = 8;
   frame.duration = DVD_MSEC_TO_TIME(frame.format.m_streamInfo.GetDuration());
   frame.pts = m_currentPts;
+
+  if (m_currentPts != DVD_NOPTS_VALUE) m_dataCacheCore.SetAudioPts(m_currentPts);
+
   m_currentPts = DVD_NOPTS_VALUE;
 }
 

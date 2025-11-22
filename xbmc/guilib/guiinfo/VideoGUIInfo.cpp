@@ -32,6 +32,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "settings/lib/Setting.h"
+#include "utils/LangCodeExpander.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
 #include "utils/log.h"
@@ -578,6 +579,17 @@ bool CVideoGUIInfo::GetLabel(std::string& value, const CFileItem *item, int cont
       value = m_subtitleInfo.language;
       return true;
       break;
+    case VIDEOPLAYER_SUBTITLES_LANG_EX:
+    {
+      std::string strLanguage;
+      if (!g_LangCodeExpander.Lookup(m_subtitleInfo.language, strLanguage))
+        strLanguage = g_localizeStrings.Get(13205); // Unknown
+      value = strLanguage;
+      return true;
+    }
+    case VIDEOPLAYER_SUBTITLES_NAME:
+      value = m_subtitleInfo.name;
+      return true;
     case VIDEOPLAYER_COVER:
       if (m_appPlayer->IsPlayingVideo())
       {
@@ -633,6 +645,36 @@ bool CVideoGUIInfo::GetLabel(std::string& value, const CFileItem *item, int cont
       }
       break;
     }
+    case VIDEOPLAYER_AUDIO_BIT_RATE:
+    {
+      int iBitrate = m_audioInfo.bitrate;
+      if (iBitrate > 0)
+      {
+        value = std::to_string(iBitrate);
+        return true;
+      }
+      break;
+    }
+    case VIDEOPLAYER_AUDIO_KIBIT_RATE:
+    {
+      int iBitrate = m_audioInfo.bitrate;
+      if (iBitrate > 0)
+      {
+        value = StringUtils::FormatNumber((static_cast<double>(iBitrate) / 1024), 0);
+        return true;
+      }
+      break;
+    }
+    case VIDEOPLAYER_AUDIO_MIBIT_RATE:
+    {
+      int iBitrate = m_audioInfo.bitrate;
+      if (iBitrate > 0)
+      {
+        value = StringUtils::FormatNumber((static_cast<double>(iBitrate) / 1048576), 2);
+        return true;
+      }
+      break;
+    }
     case VIDEOPLAYER_VIDEO_BITRATE:
     {
       int iBitrate = m_videoInfo.bitrate;
@@ -643,8 +685,49 @@ bool CVideoGUIInfo::GetLabel(std::string& value, const CFileItem *item, int cont
       }
       break;
     }
+    case VIDEOPLAYER_VIDEO_BIT_RATE:
+    {
+      int iBitrate = m_videoInfo.bitrate;
+      if (iBitrate > 0)
+      {
+        value = std::to_string(iBitrate);
+        return true;
+      }
+      break;
+    }
+    case VIDEOPLAYER_VIDEO_KIBIT_RATE:
+    {
+      int iBitrate = m_videoInfo.bitrate;
+      if (iBitrate > 0)
+      {
+        value = StringUtils::FormatNumber((static_cast<double>(iBitrate) / 1024), 0);
+        return true;
+      }
+      break;
+    }
+    case VIDEOPLAYER_VIDEO_MIBIT_RATE:
+    {
+      int iBitrate = m_videoInfo.bitrate;
+      if (iBitrate > 0)
+      {
+        value = StringUtils::FormatNumber((static_cast<double>(iBitrate) / 1048576), 2);
+        return true;
+      }
+      break;
+    }
     case VIDEOPLAYER_AUDIO_LANG:
       value = m_audioInfo.language;
+      return true;
+    case VIDEOPLAYER_AUDIO_LANG_EX:
+    {
+      std::string strLanguage;
+      if (!g_LangCodeExpander.Lookup(m_audioInfo.language, strLanguage))
+        strLanguage = g_localizeStrings.Get(13205); // Unknown
+      value = strLanguage;
+      return true;
+    }
+    case VIDEOPLAYER_AUDIO_NAME:
+      value = m_audioInfo.name;
       return true;
   }
 

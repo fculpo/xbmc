@@ -17,10 +17,27 @@
 #include "BitstreamConverter.h"
 #include "BitstreamReader.h"
 #include "BitstreamWriter.h"
-#include "utils/StringUtils.h"
 #include "HevcSei.h"
+#include "HDR10.h"
+#include "HDR10Plus.h"
+#include "HDR10PlusConvert.h"
+
+#include "utils/StringUtils.h"
+#include "cores/VideoPlayer/Process/ProcessInfo.h"
+#include "cores/VideoPlayer/DVDStreamInfo.h"
 
 #include <algorithm>
+#include <fmt/format.h>
+
+extern "C"
+{
+#include <libavutil/mastering_display_metadata.h>
+#ifdef HAVE_LIBDOVI
+#include <libdovi/rpu_parser.h>
+#endif
+}
+
+static bool hdr10plus_conversion = false;
 
 enum {
   AVC_NAL_SLICE=1,
@@ -271,6 +288,163 @@ static bool has_sei_recovery_point(const uint8_t *p, const uint8_t *end)
   return false;
 }
 
+#ifdef HAVE_LIBDOVI
+// The returned data must be freed with `dovi_data_free`
+// May be NULL if no conversion was done
+static const DoviData* convert_dovi_rpu_nal(uint8_t* nal_buf, uint32_t nal_size, int mode, bool first_frame, DOVIELType& dovi_el_type)
+{
+  DoviRpuOpaque* rpuOpaque = dovi_parse_unspec62_nalu(nal_buf, nal_size);
+  const DoviRpuDataHeader* header = dovi_rpu_get_header(rpuOpaque);
+  const DoviData* rpu_data = NULL;
+
+  if (header && header->guessed_profile == 7)
+  {
+    if (first_frame)
+    {
+      dovi_el_type = DOVIELType::TYPE_NONE;
+      if (header->el_type)
+      {
+        if (StringUtils::EqualsNoCase(header->el_type, "FEL"))
+          dovi_el_type = DOVIELType::TYPE_FEL;
+        else if (StringUtils::EqualsNoCase(header->el_type, "MEL"))
+          dovi_el_type = DOVIELType::TYPE_MEL;
+      }
+    }
+
+    if (dovi_convert_rpu_with_mode(rpuOpaque, mode) >= 0)
+      rpu_data = dovi_write_unspec62_nalu(rpuOpaque);
+  }
+
+  dovi_rpu_free_header(header);
+  dovi_rpu_free(rpuOpaque);
+
+  return rpu_data;
+}
+
+static void get_dovi_rpu_info(uint8_t* nal_buf, uint32_t nal_size, bool first_frame, DOVIELType& dovi_el_type, AVDOVIDecoderConfigurationRecord& dovi, double pts, CDataCacheCore& dataCacheCore)
+{
+  // https://professionalsupport.dolby.com/s/article/Dolby-Vision-Metadata-Levels?language=en_US
+
+  DoviRpuOpaque* rpuOpaque = dovi_parse_unspec62_nalu(nal_buf, nal_size);
+
+  const DoviVdrDmData* vdr_dm_data = dovi_rpu_get_vdr_dm_data(rpuOpaque);
+
+  if (vdr_dm_data)
+  {
+
+    DOVIFrameMetadata dovi_frame_metadata;
+
+    if (vdr_dm_data->dm_data.level1)
+    {
+      dovi_frame_metadata.level1_min_pq = vdr_dm_data->dm_data.level1->min_pq;
+      dovi_frame_metadata.level1_max_pq = vdr_dm_data->dm_data.level1->max_pq;
+      dovi_frame_metadata.level1_avg_pq = vdr_dm_data->dm_data.level1->avg_pq;
+      dovi_frame_metadata.pts = pts;
+    }
+
+    if (vdr_dm_data->dm_data.level5)
+    {
+      dovi_frame_metadata.has_level5_metadata = true;
+      dovi_frame_metadata.level5_active_area_left_offset = vdr_dm_data->dm_data.level5->active_area_left_offset;
+      dovi_frame_metadata.level5_active_area_right_offset = vdr_dm_data->dm_data.level5->active_area_right_offset;
+      dovi_frame_metadata.level5_active_area_top_offset = vdr_dm_data->dm_data.level5->active_area_top_offset;
+      dovi_frame_metadata.level5_active_area_bottom_offset = vdr_dm_data->dm_data.level5->active_area_bottom_offset;
+    }
+
+    dataCacheCore.SetVideoDoViFrameMetadata(dovi_frame_metadata);
+  }
+
+  if (first_frame) {
+
+    DOVIStreamMetadata dovi_stream_metadata;
+
+    if (vdr_dm_data)
+    {
+      dovi_stream_metadata.source_min_pq = vdr_dm_data->source_min_pq;
+      dovi_stream_metadata.source_max_pq = vdr_dm_data->source_max_pq;
+    }
+
+    if (vdr_dm_data && vdr_dm_data->dm_data.level6)
+    {
+      dovi_stream_metadata.has_level6_metadata = true;
+
+      dovi_stream_metadata.level6_max_lum = vdr_dm_data->dm_data.level6->max_display_mastering_luminance;
+      dovi_stream_metadata.level6_min_lum = vdr_dm_data->dm_data.level6->min_display_mastering_luminance;
+
+      dovi_stream_metadata.level6_max_cll = vdr_dm_data->dm_data.level6->max_content_light_level;
+      dovi_stream_metadata.level6_max_fall = vdr_dm_data->dm_data.level6->max_frame_average_light_level;
+    }
+
+    std::string meta_version = "";
+    if (vdr_dm_data && vdr_dm_data->dm_data.level254)
+    {
+      hdr10plus_conversion = false;
+      aml_dv_hdr10plus_conversion(hdr10plus_conversion);  
+      unsigned int noL8 = vdr_dm_data->dm_data.level8.len;
+      if (noL8 > 0)
+        meta_version = fmt::format("CMv4.0 {}-{} {}-L8",
+                                  vdr_dm_data->dm_data.level254->dm_version_index,
+                                  vdr_dm_data->dm_data.level254->dm_mode,
+                                  noL8);
+      else
+        meta_version = fmt::format("CMv4.0 {}-{}",
+                                  vdr_dm_data->dm_data.level254->dm_version_index,
+                                  vdr_dm_data->dm_data.level254->dm_mode);
+    }
+    else if (hdr10plus_conversion)
+    {
+      hdr10plus_conversion = false;
+      meta_version = fmt::format("CMv4.0 {}-{}", 2, 0);
+    }
+    else if (vdr_dm_data && vdr_dm_data->dm_data.level1)
+    {
+      hdr10plus_conversion = false;
+      aml_dv_hdr10plus_conversion(hdr10plus_conversion);
+      unsigned int noL2 = vdr_dm_data->dm_data.level2.len;
+      if (noL2 > 0)
+        meta_version = fmt::format("CMv2.9 {}-L2", noL2);
+      else
+        meta_version = "CMv2.9";
+    }
+    else
+    {
+      hdr10plus_conversion = false;
+      aml_dv_hdr10plus_conversion(hdr10plus_conversion);
+    }
+    
+    dovi_stream_metadata.meta_version = meta_version;
+    dataCacheCore.SetVideoDoViStreamMetadata(dovi_stream_metadata);
+    aml_dv_send_md_levels();
+
+    DOVIStreamInfo dovi_stream_info;
+    const DoviRpuDataHeader* header = dovi_rpu_get_header(rpuOpaque);
+    dovi_el_type = DOVIELType::TYPE_NONE;
+    aml_dv_send_profile(header->guessed_profile);
+
+    if (header && ((header->guessed_profile == 4) || (header->guessed_profile == 7)) && header->el_type)
+    {
+      if (StringUtils::EqualsNoCase(header->el_type, "FEL"))
+        dovi_el_type = DOVIELType::TYPE_FEL;
+      else if (StringUtils::EqualsNoCase(header->el_type, "MEL"))
+        dovi_el_type = DOVIELType::TYPE_MEL;
+    }
+
+    dovi_stream_info.dovi_el_type = dovi_el_type;
+    dovi_stream_info.dovi = dovi;
+
+    dovi_stream_info.has_config = (memcmp(&dovi, &CDVDStreamInfo::empty_dovi, sizeof(AVDOVIDecoderConfigurationRecord)) != 0);
+    dovi_stream_info.has_header = (header != NULL);
+
+    dataCacheCore.SetVideoDoViStreamInfo(dovi_stream_info);
+    aml_dv_send_el_type();
+    dovi_rpu_free_header(header);
+  }
+
+  dovi_rpu_free_vdr_dm_data(vdr_dm_data);
+  dovi_rpu_free(rpuOpaque);
+}
+#endif
+
 ////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////
 CBitstreamParser::CBitstreamParser() = default;
@@ -324,7 +498,9 @@ bool CBitstreamParser::CanStartDecode(const uint8_t *buf, int buf_size)
 
 ////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////
-CBitstreamConverter::CBitstreamConverter()
+CBitstreamConverter::CBitstreamConverter(CDVDStreamInfo& hints)
+                        : m_hints(hints)
+                        , m_dataCacheCore(CServiceBroker::GetDataCacheCore())
 {
   m_convert_bitstream = false;
   m_convertBuffer     = NULL;
@@ -335,13 +511,17 @@ CBitstreamConverter::CBitstreamConverter()
   m_convert_3byteTo4byteNALSize = false;
   m_convert_bytestream = false;
   m_sps_pps_context.sps_pps_data = NULL;
-  m_start_decode = true;
-  m_convert_dovi = false;
+  m_start_decode = false;
+  m_convert_dovi = DOVIMode::MODE_NONE;
+  m_convert_Hdr10Plus = false;
+  m_prefer_Hdr10Plus_conversion = false;
+  m_dual_priority_Hdr10Plus = false;
   m_removeDovi = false;
   m_removeHdr10Plus = false;
-  m_setDoviZeroLevel5 = false;
-  m_dovi_el_type = ELType::TYPE_NONE;
   m_combine = false;
+  m_first_frame = true;
+  m_hdrStaticMetadataInfo = {};
+  m_dataCacheCore.SetVideoSourceHdrType(m_hints.hdrType);
 }
 
 CBitstreamConverter::~CBitstreamConverter()
@@ -349,11 +529,14 @@ CBitstreamConverter::~CBitstreamConverter()
   Close();
 }
 
-bool CBitstreamConverter::Open(enum AVCodecID codec, uint8_t *in_extradata, int in_extrasize, bool to_annexb)
+bool CBitstreamConverter::Open(bool to_annexb)
 {
   m_to_annexb = to_annexb;
+  m_codec = m_hints.codec;
+  m_intial_hdrType = m_hints.hdrType;
+  uint8_t *in_extradata = m_hints.extradata.GetData();
+  int in_extrasize = m_hints.extradata.GetSize();
 
-  m_codec = codec;
   switch(m_codec)
   {
     case AV_CODEC_ID_H264:
@@ -374,7 +557,9 @@ bool CBitstreamConverter::Open(enum AVCodecID codec, uint8_t *in_extradata, int 
           return true;
         }
         else
+        {
           CLog::Log(LOGINFO, "CBitstreamConverter::Open Invalid avcC");
+        }
       }
       else
       {
@@ -454,7 +639,9 @@ bool CBitstreamConverter::Open(enum AVCodecID codec, uint8_t *in_extradata, int 
           return true;
         }
         else
+        {
           CLog::Log(LOGINFO, "CBitstreamConverter::Open Invalid hvcC");
+        }
       }
       else
       {
@@ -518,7 +705,7 @@ void CBitstreamConverter::Close(void)
   m_combine = false;
 }
 
-bool CBitstreamConverter::Convert(uint8_t *pData, int iSize)
+bool CBitstreamConverter::Convert(uint8_t *pData, int iSize, double pts)
 {
   if (m_convertBuffer)
   {
@@ -545,7 +732,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData, int iSize)
           int bytestream_size = 0;
           uint8_t *bytestream_buff = NULL;
 
-          BitstreamConvert(demuxer_content, demuxer_bytes, &bytestream_buff, &bytestream_size);
+          BitstreamConvert(demuxer_content, demuxer_bytes, &bytestream_buff, &bytestream_size, pts);
           if (bytestream_buff && (bytestream_size > 0))
           {
             m_convertSize   = bytestream_size;
@@ -564,6 +751,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData, int iSize)
         {
           m_inputSize = iSize;
           m_inputBuffer = pData;
+          m_start_decode = true; // TODO: should really wait for IDR even though not converting.
           return true;
         }
       }
@@ -627,7 +815,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData, int iSize)
   return false;
 }
 
-bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pData_el, int iSize_el)
+bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pData_el, int iSize_el, double pts)
 {
   if (m_convertBuffer)
   {
@@ -657,9 +845,12 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
       avio_close_dyn_buf(pb, &buf);
     }
     else
+    {
       buf = pData_bl;
+    }
 
-    m_dovi_el_type = ELType::TYPE_NONE;
+    Hdr10PlusMetadata hdr10plus_meta;
+    bool convert_hdr10plus_meta = false;
 
     // process bl frame data
     start = buf;
@@ -672,14 +863,27 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
       buf += 4;
       nal_type = (buf[0] >> 1) & 0x3f;
 
-      if (nal_type != AVC_NAL_END_SEQUENCE)
-        BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
-      else
-      {
-        buf_eos = buf;
-        size_eos = size;
+      switch (nal_type) {
+
+        case HEVC_NAL_SEI_PREFIX:
+          ProcessSeiPrefixWrap(buf, size, &m_convertBuffer, offset, hdr10plus_meta, convert_hdr10plus_meta); 
+          break;
+
+        case AVC_NAL_END_SEQUENCE: 
+          buf_eos = buf;
+          size_eos = size;
+          break;
+
+        default:
+          if (!m_start_decode && IsIDR(nal_type)) m_start_decode = true;
+          BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, nal_type);
+          break;
       }
-      CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: BL nal_type: {}, size: {}",
+
+      // Make sure bl_present_flag is set.
+      m_hints.dovi.bl_present_flag = true;
+
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: DT-DL BL nal_type: [{}], size: [{}]",
         nal_type, size);
 
       buf += size;
@@ -698,37 +902,30 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
       buf += 4;
       nal_type = (buf[0] >> 1) & 0x3f;
 
-      if (nal_type == HEVC_NAL_UNSPEC62)
-      {
-        const uint8_t *nalu_62_data = buf;
-#ifdef HAVE_LIBDOVI
-        const DoviData* rpu_data = processDoviRpu(buf, size);
+      switch (nal_type) {
 
-        if (rpu_data)
-        {
-          nalu_62_data = rpu_data->data;
-          size = rpu_data->len;
-        }
-#endif
+        case HEVC_NAL_UNSPEC62: // DoVi RPU
+          if (!m_removeDovi && !convert_hdr10plus_meta)
+            ProcessDoViRpuWrap(buf, size, &m_convertBuffer, offset, pts);
+          break;
 
-        BitstreamAllocAndCopy(&m_convertBuffer, &offset, nalu_62_data, size, nal_type);
-
-#ifdef HAVE_LIBDOVI
-        if (rpu_data)
-          dovi_data_free(rpu_data);
-#endif
+        default: // Package other data into HEVC_NAL_UNSPEC63 DoVi EL
+          if (!m_removeDovi && !convert_hdr10plus_meta && (m_convert_dovi == DOVIMode::MODE_NONE))
+            BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, HEVC_NAL_UNSPEC63);
+          break;
       }
-      else
-      {
-        if (!m_convert_dovi)
-          BitstreamAllocAndCopy(&m_convertBuffer, &offset, buf, size, HEVC_NAL_UNSPEC63);
-      }
-      if (!m_convert_dovi || nal_type == HEVC_NAL_UNSPEC62)
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: EL nal_type: {}, size: {}",
-          nal_type, size);
+
+      // Make sure el_present_flag is set.
+      m_hints.dovi.el_present_flag = true;
+
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CBitstreamConverter::Convert: DT-DL EL nal_type: [{}], size: [{}]", nal_type, size);
 
       buf += size;
     }
+
+    // If converting hdr10plus - add the DoVi RPU as the last NALU in the access unit.
+    if (convert_hdr10plus_meta)
+      AddDoViRpuNaluWrap(hdr10plus_meta, &m_convertBuffer, offset, pts);
 
     // append end of sequence if exist
     if (buf_eos)
@@ -741,6 +938,7 @@ bool CBitstreamConverter::Convert(uint8_t *pData_bl, int iSize_bl, uint8_t *pDat
     m_combine = true;
   }
 
+  m_first_frame = false;
   return true;
 }
 
@@ -1011,7 +1209,201 @@ bool CBitstreamConverter::IsSlice(uint8_t unit_type)
   }
 }
 
-bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **poutbuf, int *poutbuf_size)
+void CBitstreamConverter::ApplyMasteringDisplayColourVolume(const MasteringDisplayColourVolume& metadata, bool& update) {
+
+  if ((m_hdrStaticMetadataInfo.max_lum != metadata.maxLuminance) ||
+      (m_hdrStaticMetadataInfo.min_lum != metadata.minLuminance) ||
+      !m_hdrStaticMetadataInfo.has_mdcv_metadata)
+  {
+    m_hdrStaticMetadataInfo.has_mdcv_metadata = true;
+    m_hdrStaticMetadataInfo.max_lum = metadata.maxLuminance;
+    m_hdrStaticMetadataInfo.min_lum = metadata.minLuminance;
+    m_hdrStaticMetadataInfo.colour_primaries = MasteringDisplayColourVolumeText(metadata);
+    update = true;
+
+    CLog::Log(LOGINFO, "CBitstreamConverter::ApplyMasteringDisplayColourVolume [{}] [{}]",  m_hdrStaticMetadataInfo.max_lum, m_hdrStaticMetadataInfo.min_lum);
+  }
+}
+
+void CBitstreamConverter::ApplyContentLightLevel(const ContentLightLevel& metadata, bool& update) {
+
+  if ((m_hdrStaticMetadataInfo.max_cll != metadata.maxContentLightLevel) ||
+      (m_hdrStaticMetadataInfo.max_fall != metadata.maxFrameAverageLightLevel) ||
+      !m_hdrStaticMetadataInfo.has_cll_metadata)
+  {
+    m_hdrStaticMetadataInfo.has_cll_metadata = true;
+    m_hdrStaticMetadataInfo.max_cll = metadata.maxContentLightLevel;
+    m_hdrStaticMetadataInfo.max_fall = metadata.maxFrameAverageLightLevel;
+    update = true;
+
+    CLog::Log(LOGINFO, "CBitstreamConverter::ApplyContentLightLevel [{}] [{}]", m_hdrStaticMetadataInfo.max_cll, m_hdrStaticMetadataInfo.max_fall);
+  }
+}
+
+void CBitstreamConverter::UpdateHdrStaticMetadata() {
+
+  HDRStaticMetadataInfo hdrStaticMetadataInfo;
+
+  hdrStaticMetadataInfo.has_mdcv_metadata = m_hdrStaticMetadataInfo.has_mdcv_metadata;
+  hdrStaticMetadataInfo.max_lum = m_hdrStaticMetadataInfo.max_lum;
+  hdrStaticMetadataInfo.min_lum = m_hdrStaticMetadataInfo.min_lum;
+  hdrStaticMetadataInfo.colour_primaries = m_hdrStaticMetadataInfo.colour_primaries;
+
+  hdrStaticMetadataInfo.has_cll_metadata = m_hdrStaticMetadataInfo.has_cll_metadata;
+  hdrStaticMetadataInfo.max_cll = m_hdrStaticMetadataInfo.max_cll;
+  hdrStaticMetadataInfo.max_fall = m_hdrStaticMetadataInfo.max_fall;
+
+  m_dataCacheCore.SetVideoHDRStaticMetadataInfo(hdrStaticMetadataInfo);
+}
+
+void CBitstreamConverter::AddDoViRpuNaluWrap(const Hdr10PlusMetadata& meta, uint8_t **poutbuf, uint32_t& poutbuf_size, double pts) {
+
+  int int_poutbuf_size = poutbuf_size;
+  AddDoViRpuNalu(meta, poutbuf, &int_poutbuf_size, pts);
+  poutbuf_size = static_cast<uint32_t>(int_poutbuf_size);
+}
+
+void CBitstreamConverter::AddDoViRpuNalu(const Hdr10PlusMetadata& meta, uint8_t **poutbuf, int *poutbuf_size, double pts) {
+
+  auto nalu = create_rpu_nalu_for_hdr10plus(
+    meta,
+    m_convert_Hdr10Plus_peak_brightness_source,
+    m_hdrStaticMetadataInfo);
+
+  if (!nalu.empty())
+  {
+    if (m_first_frame) {
+      m_hints.hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+      m_hints.dovi.dv_version_major = 1;
+      m_hints.dovi.dv_version_minor = 0;
+      m_hints.dovi.dv_profile = 8;
+      m_hints.dovi.dv_level = 6;
+      m_hints.dovi.rpu_present_flag = 1;
+      m_hints.dovi.el_present_flag = 0;
+      m_hints.dovi.bl_present_flag = 1;
+      m_hints.dovi.dv_bl_signal_compatibility_id = 1;
+      hdr10plus_conversion = true;
+      aml_dv_hdr10plus_conversion(hdr10plus_conversion);
+    }
+
+#ifdef HAVE_LIBDOVI
+    get_dovi_rpu_info(nalu.data(), nalu.size(), m_first_frame, m_hints.dovi_el_type, m_hints.dovi, pts, m_dataCacheCore);
+#endif
+
+    BitstreamAllocAndCopy(poutbuf, poutbuf_size, NULL, 0, nalu.data(), nalu.size(), HEVC_NAL_UNSPEC62);
+    nalu.clear();
+  }
+}
+
+void CBitstreamConverter::ProcessSeiPrefixWrap(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, uint32_t& poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta) {
+
+  int int_poutbuf_size = poutbuf_size;
+  ProcessSeiPrefix(buf, nal_size, poutbuf, &int_poutbuf_size, meta, convert_hdr10plus_meta);
+  poutbuf_size = static_cast<uint32_t>(int_poutbuf_size);
+}
+
+void CBitstreamConverter::ProcessSeiPrefix(uint8_t *buf, int32_t nal_size, uint8_t **poutbuf, int *poutbuf_size, Hdr10PlusMetadata& meta, bool& convert_hdr10plus_meta) {
+
+  bool copy = true;
+
+  std::vector<uint8_t> clearBuf;
+  auto messages = CHevcSei::ParseSeiRbspUnclearedEmulation(buf, nal_size, clearBuf);
+
+  bool updateMetadata = false;
+
+  if (auto colourVolume = CHevcSei::ExtractMasteringDisplayColourVolume(messages, clearBuf))
+    ApplyMasteringDisplayColourVolume(colourVolume.value(), updateMetadata);
+
+  if (auto lightLevel = CHevcSei::ExtractContentLightLevel(messages, clearBuf))
+    ApplyContentLightLevel(lightLevel.value(), updateMetadata);
+
+  if (updateMetadata) UpdateHdrStaticMetadata();
+
+  aml_dv_send_hdr10_data();
+
+  if (auto res = CHevcSei::ExtractHdr10Plus(messages, clearBuf)) {
+
+    bool isDual = (m_intial_hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION); // Original is DV and now also found HDR10+ so is dual.
+    bool considerAsHdr10Plus = (!isDual || m_dual_priority_Hdr10Plus || m_prefer_Hdr10Plus_conversion);
+
+    if (m_first_frame) {
+      if (considerAsHdr10Plus) {
+        m_hints.hdrType = StreamHdrType::HDR_TYPE_HDR10PLUS;
+        m_dataCacheCore.SetVideoSourceHdrType(StreamHdrType::HDR_TYPE_HDR10PLUS);
+        if (isDual) m_dataCacheCore.SetVideoSourceAdditionalHdrType(StreamHdrType::HDR_TYPE_DOLBYVISION);
+      } else {
+        if (isDual) m_dataCacheCore.SetVideoSourceAdditionalHdrType(StreamHdrType::HDR_TYPE_HDR10PLUS);
+      }
+    }
+
+    bool convert = (considerAsHdr10Plus && m_convert_Hdr10Plus && !m_dual_priority_Hdr10Plus);
+
+    if (convert) {
+      meta = res.value();
+      convert_hdr10plus_meta = true;
+    }
+
+    if (convert || m_removeHdr10Plus) {
+      // Remove and carry forward remaining sei in nalu.
+      auto nalu = CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, nal_size);
+      if (!nalu.empty())
+      {
+        BitstreamAllocAndCopy(poutbuf, poutbuf_size, NULL, 0, nalu.data(), nalu.size(), HEVC_NAL_SEI_PREFIX);
+        nalu.clear();
+      }
+      copy = false;
+    }
+  }
+
+  if (copy) BitstreamAllocAndCopy(poutbuf, poutbuf_size, NULL, 0, buf, nal_size, HEVC_NAL_SEI_PREFIX);
+}
+
+void CBitstreamConverter::ProcessDoViRpuWrap(uint8_t *nal_buf, int32_t nal_size, uint8_t **poutbuf, uint32_t& poutbuf_size, double pts) {
+
+  int int_poutbuf_size = poutbuf_size;
+  ProcessDoViRpu(nal_buf, nal_size, poutbuf, &int_poutbuf_size, pts);
+  poutbuf_size = static_cast<uint32_t>(int_poutbuf_size);
+}
+
+void CBitstreamConverter::ProcessDoViRpu(uint8_t *nal_buf, int32_t nal_size, uint8_t **poutbuf, int *poutbuf_size, double pts) {
+
+#ifdef HAVE_LIBDOVI
+  const DoviData* rpu_data = NULL;
+  if (m_convert_dovi != DOVIMode::MODE_NONE) {
+    DOVIELType dovi_el_type = DOVIELType::TYPE_NONE;
+    rpu_data = convert_dovi_rpu_nal(nal_buf, nal_size, m_convert_dovi, m_first_frame, dovi_el_type);
+    if (rpu_data)
+    {
+      nal_buf = const_cast<uint8_t*>(rpu_data->data);
+      nal_size = rpu_data->len;
+
+      // Capture the DOVI source details - about to be replaced.
+      if (m_first_frame)
+      {
+        DOVIStreamInfo dovi_stream_info;
+        dovi_stream_info.dovi_el_type = dovi_el_type;
+        dovi_stream_info.dovi = m_hints.dovi;
+        m_dataCacheCore.SetVideoSourceDoViStreamInfo(dovi_stream_info);
+      }
+
+      m_hints.dovi.el_present_flag = 0; // EL removed in both converstion cases - to MEL and to P8.1
+      if (m_convert_dovi == DOVIMode::MODE_TO81) {
+        m_hints.dovi.dv_profile = 8;
+        m_hints.dovi.dv_bl_signal_compatibility_id = 1;
+      }
+    }
+  }
+  get_dovi_rpu_info(nal_buf, nal_size, m_first_frame, m_hints.dovi_el_type, m_hints.dovi, pts, m_dataCacheCore);
+#endif
+
+  BitstreamAllocAndCopy(poutbuf, poutbuf_size, NULL, 0, nal_buf, nal_size, HEVC_NAL_UNSPEC62);
+
+#ifdef HAVE_LIBDOVI
+  if (rpu_data) dovi_data_free(rpu_data);
+#endif
+}
+
+bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **poutbuf, int *poutbuf_size, double pts)
 {
   // based on h264_mp4toannexb_bsf.c (ffmpeg)
   // which is Copyright (c) 2007 Benoit Fouet <benoit.fouet@free.fr>
@@ -1025,9 +1417,8 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
   uint32_t cumul_size = 0;
   const uint8_t *buf_end = buf + buf_size;
 
-#ifdef HAVE_LIBDOVI
-  const DoviData* rpu_data = NULL;
-#endif
+  Hdr10PlusMetadata hdr10plus_meta;
+  bool convert_hdr10plus_meta = false;
 
   std::vector<uint8_t> finalPrefixSeiNalu;
 
@@ -1072,8 +1463,21 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
     if (m_sps_pps_context.first_idr && (unit_type == nal_sps || unit_type == nal_pps))
       m_sps_pps_context.idr_sps_pps_seen = 1;
 
-    if (!m_start_decode && (unit_type == nal_sps || IsIDR(unit_type) || (unit_type == nal_sei && has_sei_recovery_point(buf, buf + nal_size))))
-      m_start_decode = true;
+    if (m_hints.codec == AV_CODEC_ID_H264)
+    {
+      if (!m_start_decode && (unit_type == nal_sps || IsIDR(unit_type))) m_start_decode = true;
+    }
+    else if (m_hints.codec == AV_CODEC_ID_AV1)
+    {
+      if (!m_start_decode && (unit_type == nal_sps || IsIDR(unit_type) || (unit_type == nal_sei && has_sei_recovery_point(buf, buf + nal_size)))) m_start_decode = true;
+    }
+    else
+    {
+      if (!m_start_decode && IsIDR(unit_type)) m_start_decode = true;
+    }
+
+    // if (!m_start_decode && (unit_type == nal_sps || IsIDR(unit_type) || (unit_type == nal_sei && has_sei_recovery_point(buf, buf + nal_size))))
+    //   m_start_decode = true;
 
     // prepend only to the first access unit of an IDR picture, if no sps/pps already present
     if (m_sps_pps_context.first_idr && IsIDR(unit_type) && !m_sps_pps_context.idr_sps_pps_seen)
@@ -1084,11 +1488,6 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
     }
     else
     {
-      bool write_buf = true;
-      const uint8_t* buf_to_write = buf;
-      int32_t final_nal_size = nal_size;
-
-      bool containsHdr10Plus{false};
 
       if (!m_sps_pps_context.first_idr && IsSlice(unit_type))
       {
@@ -1096,69 +1495,37 @@ bool CBitstreamConverter::BitstreamConvert(uint8_t* pData, int iSize, uint8_t **
           m_sps_pps_context.idr_sps_pps_seen = 0;
       }
 
-      if (m_removeDovi && (unit_type == HEVC_NAL_UNSPEC62 || unit_type == HEVC_NAL_UNSPEC63))
-        write_buf = false;
+      switch (unit_type) {
 
-      // Try removing HDR10+ only if the NAL is big enough, optimization
-      if (m_removeHdr10Plus && unit_type == HEVC_NAL_SEI_PREFIX && nal_size >= 7)
-      {
-        std::tie(containsHdr10Plus, finalPrefixSeiNalu) =
-            CHevcSei::RemoveHdr10PlusFromSeiNalu(buf, nal_size);
+        case HEVC_NAL_SEI_PREFIX:
+          ProcessSeiPrefix(buf, nal_size, poutbuf, poutbuf_size, hdr10plus_meta, convert_hdr10plus_meta);
+          break;
 
-        if (containsHdr10Plus)
-        {
-          if (!finalPrefixSeiNalu.empty())
-          {
-            buf_to_write = finalPrefixSeiNalu.data();
-            final_nal_size = finalPrefixSeiNalu.size();
-          }
-          else
-          {
-            write_buf = false;
-          }
-        }
+        case HEVC_NAL_UNSPEC62: // DoVi RPU
+          if (!m_removeDovi && !convert_hdr10plus_meta)
+            ProcessDoViRpu(buf, nal_size, poutbuf, poutbuf_size, pts);
+          break;
+
+        case HEVC_NAL_UNSPEC63: // DoVi EL
+          if (!m_removeDovi && !convert_hdr10plus_meta && (m_convert_dovi == DOVIMode::MODE_NONE))
+            BitstreamAllocAndCopy(poutbuf, poutbuf_size, NULL, 0, buf, nal_size, unit_type);
+          break;
+
+        default: // Other
+          BitstreamAllocAndCopy(poutbuf, poutbuf_size, NULL, 0, buf, nal_size, unit_type);
+          break;
       }
-
-      if (write_buf)
-      {
-        if (unit_type == HEVC_NAL_UNSPEC62)
-        {
-#ifdef HAVE_LIBDOVI
-          // Convert the RPU itself
-          rpu_data = processDoviRpu(buf, nal_size);
-          if (rpu_data)
-          {
-            buf_to_write = rpu_data->data;
-            final_nal_size = rpu_data->len;
-          }
-#endif
-        }
-        else if (m_convert_dovi && unit_type == HEVC_NAL_UNSPEC63)
-        {
-          // Ignore the enhancement layer, may or may not help
-          write_buf = false;
-        }
-      }
-
-      if (write_buf)
-        BitstreamAllocAndCopy(poutbuf, poutbuf_size, NULL, 0, buf_to_write, final_nal_size,
-                              unit_type);
-
-#ifdef HAVE_LIBDOVI
-      if (rpu_data)
-      {
-        dovi_data_free(rpu_data);
-        rpu_data = NULL;
-      }
-#endif
-
-      if (containsHdr10Plus && !finalPrefixSeiNalu.empty())
-        finalPrefixSeiNalu.clear();
     }
 
     buf += nal_size;
     cumul_size += nal_size + m_sps_pps_context.length_size;
   } while (cumul_size < buf_size);
+
+  // If converting hdr10plus - add the DoVi RPU as the last NALU in the access unit.
+  if (convert_hdr10plus_meta)
+    AddDoViRpuNalu(hdr10plus_meta, poutbuf, poutbuf_size, pts);
+
+  m_first_frame = false;
 
   return true;
 
@@ -1781,11 +2148,13 @@ bool CBitstreamConverter::h264_sequence_header(const uint8_t *data, const uint32
                     break;
                 case 255:
                     // EXTENDED_SAR
+                    {
                     if (sar_height)
                         ratio *= sar_width / (float)sar_height;
                     else
                         ratio = 0.0f;
                     break;
+                    }
             } // switch
             if (aspect_ratio_idc != sequence->ratio_info)
             {
@@ -1806,64 +2175,3 @@ bool CBitstreamConverter::h264_sequence_header(const uint8_t *data, const uint32
 
     return changed;
 }
-
-#ifdef HAVE_LIBDOVI
-// Processes Dolby Vision RPU
-//   - Converts to profile 8.1 if `m_convert_dovi` is enabled
-//   - Sets level 5 metadata to 0 offsets if `m_setDoviZeroLevel5` is enabled
-//   - Updates `m_dovi_el_type` according to the current header
-//
-// The returned data must be freed with `dovi_data_free`
-// May be NULL if no processing was done or if parsing errored
-const DoviData* CBitstreamConverter::processDoviRpu(uint8_t* buf, uint32_t nal_size)
-{
-  DoviRpuOpaque* rpu = dovi_parse_unspec62_nalu(buf, nal_size);
-  const DoviRpuDataHeader* header = dovi_rpu_get_header(rpu);
-  const DoviData* rpu_data = NULL;
-
-  int ret = 0;
-  bool processed = false;
-
-  if (!header)
-  {
-    dovi_rpu_free(rpu);
-    return rpu_data;
-  }
-
-  if (m_dovi_el_type == ELType::TYPE_NONE && header->el_type &&
-      (header->guessed_profile == 4 || header->guessed_profile == 7))
-  {
-    if (StringUtils::EqualsNoCase(header->el_type, "FEL"))
-      m_dovi_el_type = ELType::TYPE_FEL;
-    else if (StringUtils::EqualsNoCase(header->el_type, "MEL"))
-      m_dovi_el_type = ELType::TYPE_MEL;
-  }
-
-  if (m_convert_dovi && header->guessed_profile == 7)
-  {
-    ret = dovi_convert_rpu_with_mode(rpu, 2);
-    if (ret < 0)
-      goto done;
-
-    processed = true;
-  }
-
-  if (m_setDoviZeroLevel5)
-  {
-    ret = dovi_rpu_set_active_area_offsets(rpu, 0, 0, 0, 0);
-    if (ret < 0)
-      goto done;
-
-    processed = true;
-  }
-
-  if (processed)
-    rpu_data = dovi_write_unspec62_nalu(rpu);
-
-done:
-  dovi_rpu_free_header(header);
-  dovi_rpu_free(rpu);
-
-  return rpu_data;
-}
-#endif

@@ -301,7 +301,7 @@ void CGUITextLayout::BidiTransform(std::vector<CGUIString>& lines, bool forceLTR
     }
 
     // Allocate memory for visual to logical map and call bidi
-    int* visualToLogicalMap = new (std::nothrow) int[lineLength + 1]();
+    auto visualToLogicalMap = new (std::nothrow) int[lineLength + 1]();
     std::wstring visualText = BidiFlip(logicalText, forceLTRReadingOrder, visualToLogicalMap);
 
     vecText styledVisualText;
@@ -580,62 +580,117 @@ void CGUITextLayout::WrapText(const vecText &text, float maxWidth)
       continue;
     }
 
-    vecText::const_iterator pos = line.m_text.begin();
-    vecText::const_iterator lastBeginPos = line.m_text.begin();
-    vecText::const_iterator lastSpacePos = line.m_text.end();
-    vecText curLine;
-
-    while (pos < line.m_text.end())
+    std::vector<character_t> tmp;
+    tmp.reserve(line.m_text.size());
+    auto widthOf = [&](const std::vector<character_t>::const_iterator start,
+                       const std::vector<character_t>::const_iterator end) -> float
     {
-      // Get the current letter in the string
-      const character_t& letter = *pos;
+      if (start == end)
+        return 0.0f;
+      tmp.assign(start, end);
+      return m_font->GetTextWidth(tmp);
+    };
 
-      if (CanWrapAtLetter(letter)) // Check for a space char
-        lastSpacePos = pos;
+    auto skipLeadingSpaces = [&](vecText::const_iterator& it)
+    {
+     while (it != line.m_text.end() && CanWrapAtLetter(*it))
+       ++it;
+    };
 
-      curLine.emplace_back(letter);
+    auto current = line.m_text.begin();
+    skipLeadingSpaces(current);
 
-      const float currWidth = m_font->GetTextWidth(curLine);
+    float currentWidth = 0.0f;
+    std::vector<character_t>::const_iterator currentStart = current;
+    // track end without trailing spaces
+    std::vector<character_t>::const_iterator lastNonSpaceInLine = currentStart;
 
-      if (currWidth > maxWidth)
-      {
-        if (lastSpacePos > pos) // No space char where split the line, so split by char
-        {
-          // If the pos is equal to lastBeginPos, maxWidth is not large enough to contain 1 character
-          // Push a line with the single character and move on to the next character.
-          if (pos == lastBeginPos)
-            ++pos;
+    while (current != line.m_text.end())
+    {
+      // Find next candidate wrap position
+      std::vector<character_t>::const_iterator wordEnd = current;
+      while (wordEnd != line.m_text.end() && !CanWrapAtLetter(*wordEnd))
+        ++wordEnd;
 
-          CGUIString linePart{lastBeginPos, pos, false};
-          m_lines.emplace_back(linePart);
-        }
-        else
-        {
-          CGUIString linePart{lastBeginPos, lastSpacePos, false};
-          m_lines.emplace_back(linePart);
+      const bool hasSpace = (wordEnd != line.m_text.end());
+      const float wordWidth = widthOf(current, wordEnd);
+      const float spaceWidth = hasSpace ? widthOf(wordEnd, wordEnd + 1) : 0.0f;
 
-          pos = lastSpacePos + 1;
-          lastSpacePos = line.m_text.end();
-        }
-
-        curLine.clear();
-        lastBeginPos = pos;
-
-        if (m_lines.size() >= nMaxLines)
-          return;
-
+      // Try to include word + trailing space
+      if (currentWidth + wordWidth + spaceWidth <= maxWidth)
+       {
+        currentWidth += wordWidth + spaceWidth;
+        lastNonSpaceInLine = wordEnd; // exclude trailing space
+        current = wordEnd;
+        if (hasSpace)
+          ++current;
         continue;
       }
 
-      ++pos;
+      // Try to include word without trailing space
+      if (currentWidth + wordWidth <= maxWidth)
+      {
+        m_lines.emplace_back(currentStart, wordEnd, false);
+        if (m_lines.size() >= nMaxLines)
+          return;
+
+        current = hasSpace ? (wordEnd + 1) : wordEnd;
+        skipLeadingSpaces(current);
+        currentStart = current;
+        currentWidth = 0.0f;
+        lastNonSpaceInLine = currentStart;
+        continue;
+      }
+
+      // word itself doesn't fit after existing content: wrap before it (trim trailing spaces)
+      if (currentWidth > 0.0f)
+      {
+        const std::vector<character_t>::const_iterator emitEnd =
+            lastNonSpaceInLine > currentStart ? lastNonSpaceInLine : wordEnd;
+        m_lines.emplace_back(currentStart, emitEnd, false);
+        if (m_lines.size() >= nMaxLines)
+          return;
+
+        // Start a new line; keep pos at start of the overflowing word
+        skipLeadingSpaces(current);
+        currentStart = current;
+        currentWidth = 0.0f;
+        lastNonSpaceInLine = currentStart;
+        continue;
+      }
+
+      if (current == wordEnd)
+        break;
+
+      // current line is empty and word is too long: split by character using a safe linear scan.
+      // Do not assume monotonic width because shaping/kerning can make width shrink or grow non-linearly.
+      tmp.clear();
+      size_t bestCount = 0;
+      for (auto it = current; it != wordEnd; ++it)
+      {
+        tmp.push_back(*it);
+        if (m_font->GetTextWidth(tmp) <= maxWidth)
+          bestCount = tmp.size();
+      }
+      if (bestCount == 0)
+        bestCount = 1; // ensure progress even if a single glyph is wider than maxWidth
+
+      const auto cut = current + static_cast<ptrdiff_t>(bestCount);
+      m_lines.emplace_back(current, cut, false);
+      if (m_lines.size() >= nMaxLines)
+        return;
+
+      current = cut;
+
+      skipLeadingSpaces(current);
+      currentStart = current;
+      currentWidth = 0.0f;
+      lastNonSpaceInLine = currentStart;
     }
 
-    // Add the remaining text part
-    if (!curLine.empty())
-    {
-      CGUIString linePart{curLine.begin(), curLine.end(), false};
-      m_lines.emplace_back(linePart);
-    }
+    // Add remaining text part of this paragraph line
+    if (currentStart < line.m_text.end())
+      m_lines.emplace_back(currentStart, line.m_text.end(), false);
 
     // Restore carriage return marker for the end of paragraph
     if (!m_lines.empty())
@@ -646,8 +701,8 @@ void CGUITextLayout::WrapText(const vecText &text, float maxWidth)
 void CGUITextLayout::LineBreakText(const vecText &text, std::vector<CGUIString> &lines)
 {
   int nMaxLines = (m_maxHeight > 0 && m_font && m_font->GetLineHeight() > 0)?(int)ceilf(m_maxHeight / m_font->GetLineHeight()):-1;
-  vecText::const_iterator lineStart = text.begin();
-  vecText::const_iterator pos = text.begin();
+  auto lineStart = text.begin();
+  auto pos = text.begin();
   while (pos != text.end() && (nMaxLines <= 0 || lines.size() < (size_t)nMaxLines))
   {
     // Get the current letter in the string

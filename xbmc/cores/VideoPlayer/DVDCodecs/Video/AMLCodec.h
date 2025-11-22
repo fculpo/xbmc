@@ -60,27 +60,28 @@ struct pq_ctrl_s {
 class CAMLCodec
 {
 public:
-  CAMLCodec(CProcessInfo &processInfo);
+  CAMLCodec(CProcessInfo &processInfo, CDVDStreamInfo &hints);
   virtual ~CAMLCodec();
 
-  bool          OpenDecoder(CDVDStreamInfo &hints, enum ELType dovi_el_type);
+  bool          OpenDecoder();
   bool          Enable_vadj1();
   void          CloseDecoder();
   void          Reset();
 
   bool          AddData(uint8_t *pData, size_t size, double dts, double pts);
-  CDVDVideoCodec::VCReturn GetPicture(VideoPicture* pVideoPicture);
+  CDVDVideoCodec::VCReturn GetPicture(VideoPicture& videoPicture);
 
   void          SetSpeed(int speed);
   void          SetDrain(bool drain){m_drain = drain;};
   void          SetVideoRect(const CRect &SrcRect, const CRect &DestRect);
-  void          SetVideoRate(int videoRate);
-  int           GetOMXPts() const { return static_cast<int>(m_cur_pts); }
+  void          SetVideoRate(int videoRate) const;
+  uint64_t      GetOMXPts() const { return m_cur_pts; }
+  double        GetPts() const { return static_cast<double>(m_cur_pts); }
   uint32_t      GetBufferIndex() const { return m_bufferIndex; };
   static float  OMXPtsToSeconds(int omxpts);
   static int    OMXDurationToNs(int duration);
   int           GetAmlDuration() const;
-  int           ReleaseFrame(const uint32_t index, bool bDrop = false);
+  int           ReleaseFrame(const uint32_t index, bool bDrop = false) const;
 
   static int    PollFrame();
   static void   SetPollDevice(int device);
@@ -93,19 +94,25 @@ private:
   void          SetVideoSaturation(const int saturation);
   bool          OpenAmlVideo(const CDVDStreamInfo &hints);
   void          CloseAmlVideo();
-  std::string   GetVfmMap(const std::string &name);
-  void          SetVfmMap(const std::string &name, const std::string &map);
+  std::string   GetVfmMap(const std::string &name) const;
+  void          SetVfmMap(const std::string &name, const std::string &map) const;
   float         GetBufferLevel();
-  float         GetBufferLevel(int new_chunk, int &data_len, int &free_len);
+  float         GetBufferLevel(int new_chunk, int &data_len, int &free_len) const;
   int           DequeueBuffer();
-  unsigned int  GetDecoderVideoRate();
-  std::string   GetHDRStaticMetadata();
+  unsigned int  GetDecoderVideoRate() const;
+  std::string   GetHDRStaticMetadata() const;
+
+  std::string   IntToFourCCString(unsigned int value) const;
+  std::string   GetDoViCodecFourCC(unsigned int codec_tag) const;
+  void          SetProcessInfoVideoDetails();
+
+  double        CalculatePictureDuration();
 
   DllLibAmCodec   *m_dll;
   bool             m_opened;
   bool             m_drain = false;
   am_private_t    *am_private;
-  CDVDStreamInfo   m_hints;
+
   int              m_speed;
   uint64_t         m_cur_pts;
   uint64_t         m_last_pts;
@@ -134,8 +141,18 @@ private:
   static std::atomic_flag  m_pollSync;
   static int m_pollDevice;
   static double m_ttd;
-  CProcessInfo &m_processInfo;
+
+  CDVDStreamInfo  &m_hints;         // Reference as values can change.
+  CProcessInfo    &m_processInfo;
+  CDataCacheCore  &m_dataCacheCore;
+
   int m_decoder_timeout;
+  bool m_decoder_bypass_buffer_ready;
+  float m_decoder_buffer;
+  float m_decoder_stream_buffer;
+  float m_decoder_minimum_buffer;
+  float m_decoder_minimum_stream_buffer;
+
   std::chrono::time_point<std::chrono::system_clock> m_tp_last_frame;
 
   bool            m_buffer_level_ready;

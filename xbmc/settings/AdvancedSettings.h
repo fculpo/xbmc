@@ -12,6 +12,7 @@
 #include "settings/lib/ISettingCallback.h"
 #include "settings/lib/ISettingsHandler.h"
 #include "utils/SortUtils.h"
+#include "cores/AudioEngine/Utils/AEStreamInfo.h"
 
 #include <cstdint>
 #include <set>
@@ -96,7 +97,14 @@ struct RefreshVideoLatency
 
   unsigned int resolution;
 
-  float delay;
+  int delay;
+};
+
+struct PassthroughAudioLatency
+{
+  CAEStreamInfo::DataType type;
+
+  int delay;
 };
 
 typedef std::vector<TVShowRegexp> SETTINGS_TVSHOWLIST;
@@ -156,7 +164,8 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int m_videoIgnoreSecondsAtStart;
     float m_videoIgnorePercentAtEnd;
     float m_audioApplyDrc;
-    unsigned int m_maxPassthroughOffSyncDuration = 50; // when 50 ms off adjust
+    unsigned int m_maxPassthroughOffSyncDuration = 20; // when off by this value then adjust
+    unsigned int m_audioAddPacketUnlockTime = 1000;
     bool m_AllowMultiChannelFloat = false; // Android only switch to be removed in v22
     bool m_superviseAudioDelay = false; // Android only to correct broken audio firmwares
 
@@ -165,7 +174,9 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     float m_videoAutoScaleMaxFps;
     std::vector<RefreshOverride> m_videoAdjustRefreshOverrides;
     std::vector<RefreshVideoLatency> m_videoRefreshLatency;
-    float m_videoDefaultLatency;
+    std::vector<PassthroughAudioLatency> m_audioPassthroughLatency;
+    bool m_hasVideoDefaultLatency;
+    int m_videoDefaultLatency;
     int  m_videoCaptureUseOcclusionQuery;
     bool m_DXVACheckCompatibility;
     bool m_DXVACheckCompatibilityPresent;
@@ -335,6 +346,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int  m_guiAlgorithmDirtyRegions;
     bool m_guiSmartRedraw;
     bool m_guiVideoLayoutTransparent{false};
+    unsigned int m_guiAVChangeFlagTimeout;
     unsigned int m_addonPackageFolderSize;
 
     bool m_jsonOutputCompact;
@@ -344,7 +356,12 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     std::vector<std::string> m_settingsFiles;
     void ParseSettingsFile(const std::string &file);
 
-    float GetLatencyTweak(float refreshrate, unsigned int resolution);
+    void DefaultAudioLatency();
+    void DefaultVideoLatency();
+
+    int GetVideoLatencyTweak(float refreshrate, unsigned int resolution);
+    int GetAudioLatencyTweak(CAEStreamInfo::DataType type);
+
     bool m_initialized;
 
     void SetDebugMode(bool debug);
@@ -373,7 +390,28 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     uint32_t m_nfsTimeout;
     int m_nfsRetries;
 
-    int  m_videoDecoderTimeout;
+    int m_videoDecoderTimeout;
+    bool m_videoDecoderBypassBufferReady;
+    float m_videoDecoderBuffer;
+    float m_videoDecoderStreamBuffer;
+    float m_videoDecoderMinimumBuffer;
+    float m_videoDecoderMinimumStreamBuffer;
+
+    void SetAlgoForReset(int num_resets);
+    int GetAlgoForReset() const;
+    int m_algoForReset;
+
+    void SetLastResetTime(double reset_time);
+    double GetLastResetTime() const;
+    double m_lastResetTime;
+
+    void SetResetSync(bool reset_sync);
+    bool GetResetSync() const;
+    bool m_resetSync;
+
+    void SetResetSeek(bool reset_seek);
+    bool GetResetSeek() const;
+    bool m_resetSeek;
 
   private:
     void Initialize();

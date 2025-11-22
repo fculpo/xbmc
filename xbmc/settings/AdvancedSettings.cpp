@@ -27,6 +27,8 @@
 #include "utils/Variant.h"
 #include "utils/XMLUtils.h"
 #include "utils/log.h"
+#include "cores/AudioEngine/Utils/AEStreamInfo.h"
+#include "utils/AMLUtils.h"
 
 #include <algorithm>
 #include <climits>
@@ -169,9 +171,23 @@ void CAdvancedSettings::Initialize()
   m_maxTempo = 1.55f;
   m_videoPreferStereoStream = false;
 
+  m_hasVideoDefaultLatency = false;
   m_videoDefaultLatency = 0.0;
 
   m_videoDecoderTimeout = 5;
+  if (aml_get_cpufamily_id() == AML_G12B)
+  {
+    m_videoDecoderBypassBufferReady = true;
+    m_videoDecoderMinimumStreamBuffer = 10.0f;
+  }
+  else
+  {
+    m_videoDecoderBypassBufferReady = false;
+    m_videoDecoderMinimumStreamBuffer = 17.5f;
+  }
+  m_videoDecoderBuffer = 5.0f;
+  m_videoDecoderStreamBuffer = 90.0f;
+  m_videoDecoderMinimumBuffer = 5.0f;
 
   m_musicUseTimeSeeking = true;
   m_musicTimeSeekForward = 10;
@@ -416,6 +432,7 @@ void CAdvancedSettings::Initialize()
   m_guiVisualizeDirtyRegions = false;
   m_guiAlgorithmDirtyRegions = 3;
   m_guiSmartRedraw = false;
+  m_guiAVChangeFlagTimeout = 11;
   m_airTunesPort = 36666;
   m_airPlayPort = 36667;
 
@@ -469,7 +486,67 @@ bool CAdvancedSettings::Load(const CProfileManager &profileManager)
   if (!m_discStubExtensions.empty())
     m_videoExtensions += "|" + m_discStubExtensions;
 
+  // Default the delays.
+  DefaultAudioLatency();
+  DefaultVideoLatency();
+
   return true;
+}
+
+constexpr CAEStreamInfo::DataType passthroughStringToEnum(std::string_view str) {
+
+  if (str == "AC3") return CAEStreamInfo::DataType::STREAM_TYPE_AC3;
+  if (str == "EAC3") return CAEStreamInfo::DataType::STREAM_TYPE_EAC3;
+
+  if (str == "MLP") return CAEStreamInfo::DataType::STREAM_TYPE_MLP;
+  if (str == "TRUEHD") return CAEStreamInfo::DataType::STREAM_TYPE_TRUEHD;
+
+  if (str == "DTS_512") return CAEStreamInfo::DataType::STREAM_TYPE_DTS_512;
+  if (str == "DTS_1024") return CAEStreamInfo::DataType::STREAM_TYPE_DTS_1024;
+  if (str == "DTS_2048") return CAEStreamInfo::DataType::STREAM_TYPE_DTS_2048;
+
+  if (str == "DTSHD") return CAEStreamInfo::DataType::STREAM_TYPE_DTSHD;
+  if (str == "DTSHD_CORE") return CAEStreamInfo::DataType::STREAM_TYPE_DTSHD_CORE;
+  if (str == "DTSHD_MA") return CAEStreamInfo::DataType::STREAM_TYPE_DTSHD_MA;
+
+  return CAEStreamInfo::DataType::STREAM_TYPE_NULL;
+}
+
+void CAdvancedSettings::DefaultAudioLatency() {
+
+  PassthroughAudioLatency audiolatency = {};
+  audiolatency.type = CAEStreamInfo::DataType::STREAM_TYPE_AC3;
+  audiolatency.delay = -30;
+  m_audioPassthroughLatency.push_back(audiolatency);
+
+  audiolatency = {};
+  audiolatency.type = CAEStreamInfo::DataType::STREAM_TYPE_EAC3;
+  audiolatency.delay = -30;
+  m_audioPassthroughLatency.push_back(audiolatency);
+
+  audiolatency = {};
+  audiolatency.type = CAEStreamInfo::DataType::STREAM_TYPE_TRUEHD;
+  audiolatency.delay = 30;
+  m_audioPassthroughLatency.push_back(audiolatency);
+}
+
+void CAdvancedSettings::DefaultVideoLatency() {
+
+  if (!m_hasVideoDefaultLatency) m_videoDefaultLatency = 160;
+
+  RefreshVideoLatency videolatency = {};
+  videolatency.resolution = 2160;
+  videolatency.refreshmin = 25;
+  videolatency.refreshmax = 25;
+  videolatency.delay = 70;
+  m_videoRefreshLatency.push_back(videolatency);
+
+  videolatency = {};
+  videolatency.resolution = 2160;
+  videolatency.refreshmin = 50;
+  videolatency.refreshmax = 60;
+  videolatency.delay = 90;
+  m_videoRefreshLatency.push_back(videolatency);
 }
 
 void CAdvancedSettings::ParseSettingsFile(const std::string &file)
@@ -586,10 +663,35 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
 
     XMLUtils::GetFloat(pElement, "limiterhold", m_limiterHold, 0.0f, 100.0f);
     XMLUtils::GetFloat(pElement, "limiterrelease", m_limiterRelease, 0.001f, 100.0f);
-    XMLUtils::GetUInt(pElement, "maxpassthroughoffsyncduration", m_maxPassthroughOffSyncDuration,
-                      20, 80);
+    XMLUtils::GetUInt(pElement, "maxpassthroughoffsyncduration", m_maxPassthroughOffSyncDuration, 10, 80);
+    XMLUtils::GetUInt(pElement, "addpacketunlocktime", m_audioAddPacketUnlockTime, 10, 5000);
     XMLUtils::GetBoolean(pElement, "allowmultichannelfloat", m_AllowMultiChannelFloat);
     XMLUtils::GetBoolean(pElement, "superviseaudiodelay", m_superviseAudioDelay);
+
+    // Store global display latency settings
+    TiXmlElement* pAudioLatency = pElement->FirstChildElement("latency");
+    if (pAudioLatency)
+    {
+      std::string type;
+      int delay;
+
+      TiXmlElement* pPassthroughAudioLatency = pAudioLatency->FirstChildElement("passthrough");
+
+      while (pPassthroughAudioLatency)
+      {
+        PassthroughAudioLatency audiolatency = {};
+
+        XMLUtils::GetString(pPassthroughAudioLatency, "type", type);
+        audiolatency.type = passthroughStringToEnum(type);
+
+        if (XMLUtils::GetInt(pPassthroughAudioLatency, "delay", delay, -600, 600))
+          audiolatency.delay = delay;
+
+        m_audioPassthroughLatency.push_back(audiolatency);
+
+        pPassthroughAudioLatency = pPassthroughAudioLatency->NextSiblingElement("passthrough");
+      }
+    }
   }
 
   pElement = pRootElement->FirstChildElement("x11");
@@ -747,7 +849,8 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     TiXmlElement* pVideoLatency = pElement->FirstChildElement("latency");
     if (pVideoLatency)
     {
-      float refresh, refreshmin, refreshmax, delay;
+      float refresh, refreshmin, refreshmax;
+      int delay;
       TiXmlElement* pRefreshVideoLatency = pVideoLatency->FirstChildElement("refresh");
 
       while (pRefreshVideoLatency)
@@ -765,7 +868,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
           videolatency.refreshmin = refreshmin;
           videolatency.refreshmax = refreshmax;
         }
-        if (XMLUtils::GetFloat(pRefreshVideoLatency, "delay", delay, -600.0f, 600.0f))
+        if (XMLUtils::GetInt(pRefreshVideoLatency, "delay", delay, -600, 600))
           videolatency.delay = delay;
 
         if (pRefreshVideoLatency->QueryUnsignedAttribute("resolution", &videolatency.resolution) ==
@@ -783,10 +886,16 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
       }
 
       // Get default global display latency
-      XMLUtils::GetFloat(pVideoLatency, "delay", m_videoDefaultLatency, -600.0f, 600.0f);
+      m_hasVideoDefaultLatency = !!pVideoLatency->FirstChildElement("delay");
+      XMLUtils::GetInt(pVideoLatency, "delay", m_videoDefaultLatency, -600, 600);
     }
 
     XMLUtils::GetInt(pElement, "decodertimeout", m_videoDecoderTimeout, 1, 60);
+    XMLUtils::GetBoolean(pElement, "decoderbypassbufferready", m_videoDecoderBypassBufferReady);
+    XMLUtils::GetFloat(pElement, "decoderbuffer", m_videoDecoderBuffer, 0.0f, 100.0f);
+    XMLUtils::GetFloat(pElement, "decoderstreambuffer", m_videoDecoderStreamBuffer, 0.0f, 100.0f);
+    XMLUtils::GetFloat(pElement, "decoderminimumbuffer", m_videoDecoderMinimumBuffer, 0.0f, 100.0f);
+    XMLUtils::GetFloat(pElement, "decoderminimumstreambuffer", m_videoDecoderMinimumStreamBuffer, 0.0f, 100.0f);
   }
 
   pElement = pRootElement->FirstChildElement("musiclibrary");
@@ -1230,6 +1339,7 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
     XMLUtils::GetInt(pElement, "algorithmdirtyregions",     m_guiAlgorithmDirtyRegions);
     XMLUtils::GetBoolean(pElement, "smartredraw", m_guiSmartRedraw);
     XMLUtils::GetBoolean(pElement, "transparentvideolayout", m_guiVideoLayoutTransparent);
+    XMLUtils::GetUInt(pElement, "avchangeflagtimeout", m_guiAVChangeFlagTimeout);
   }
 
   std::string seekSteps;
@@ -1246,6 +1356,46 @@ void CAdvancedSettings::ParseSettingsFile(const std::string &file)
 
   // load in the settings overrides
   CServiceBroker::GetSettingsComponent()->GetSettings()->LoadHidden(pRootElement);
+}
+
+void CAdvancedSettings::SetAlgoForReset(int num_resets)
+{
+  m_algoForReset = num_resets;
+}
+
+int CAdvancedSettings::GetAlgoForReset() const
+{
+  return m_algoForReset;
+}
+
+void CAdvancedSettings::SetLastResetTime(double reset_time)
+{
+  m_lastResetTime = reset_time;
+}
+
+double CAdvancedSettings::GetLastResetTime() const
+{
+  return m_lastResetTime;
+}
+
+void CAdvancedSettings::SetResetSync(bool reset_sync)
+{
+  m_resetSync = reset_sync;
+}
+
+bool CAdvancedSettings::GetResetSync() const
+{
+  return m_resetSync;
+}
+
+void CAdvancedSettings::SetResetSeek(bool reset_seek)
+{
+  m_resetSeek = reset_seek;
+}
+
+bool CAdvancedSettings::GetResetSeek() const
+{
+  return m_resetSeek;
 }
 
 void CAdvancedSettings::Clear()
@@ -1396,19 +1546,31 @@ void CAdvancedSettings::AddSettingsFile(const std::string &filename)
   m_settingsFiles.push_back(filename);
 }
 
-float CAdvancedSettings::GetLatencyTweak(float refreshrate,
-                                         unsigned int resolution)
+int CAdvancedSettings::GetVideoLatencyTweak(float refreshrate, unsigned int resolution)
 {
-  float delay = m_videoDefaultLatency;
+  int delay = m_videoDefaultLatency;
   for (int i = 0; i < (int) m_videoRefreshLatency.size(); i++)
   {
     RefreshVideoLatency& videolatency = m_videoRefreshLatency[i];
     if ((refreshrate >= videolatency.refreshmin && refreshrate <= videolatency.refreshmax) &&
-        (videolatency.resolution == resolution || videolatency.resolution == 0));
+        (videolatency.resolution == resolution || videolatency.resolution == 0))
       delay = videolatency.delay;
   }
 
   return delay; // in milliseconds
+}
+
+int CAdvancedSettings::GetAudioLatencyTweak(CAEStreamInfo::DataType type)
+{
+  for (int i = 0; i < (int) m_audioPassthroughLatency.size(); i++)
+  {
+    PassthroughAudioLatency& audiolatency = m_audioPassthroughLatency[i];
+
+    if (type == audiolatency.type)
+      return audiolatency.delay;
+  }
+
+  return 0; // in milliseconds
 }
 
 void CAdvancedSettings::SetDebugMode(bool debug)

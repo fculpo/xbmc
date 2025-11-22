@@ -16,9 +16,11 @@
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "cores/VideoSettings.h"
+#include "cores/DataCacheCore.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "utils/AMLUtils.h"
 #include "utils/CPUInfo.h"
 #include "utils/StringUtils.h"
 #include "utils/XTimeUtils.h"
@@ -318,6 +320,16 @@ CDVDVideoCodecFFmpeg::~CDVDVideoCodecFFmpeg()
   Dispose();
 }
 
+void CDVDVideoCodecFFmpeg::SetProcessInfoVideoDetails() 
+{
+  m_dataCacheCore.SetVideoHdrType(m_hints.hdrType);
+  m_dataCacheCore.SetVideoColorSpace(m_hints.colorSpace);
+  m_dataCacheCore.SetVideoColorRange(m_hints.colorRange);
+  m_dataCacheCore.SetVideoColorPrimaries(m_hints.colorPrimaries);
+  m_dataCacheCore.SetVideoColorTransferCharacteristic(m_hints.colorTransferCharacteristic);
+  m_dataCacheCore.SetVideoBitDepth(m_hints.bitdepth);
+}
+
 bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
   if (hints.cryptoSession)
@@ -338,6 +350,8 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
   m_formats.push_back(AV_PIX_FMT_NONE); /* always add none to get a terminated list in ffmpeg world */
   m_processInfo.SetSwDeinterlacingMethods();
   m_processInfo.SetVideoInterlaced(false);
+
+  SetProcessInfoVideoDetails();
 
   // libdav1d av1 sw decoding is implemented as a separate decoder
   // in ffmpeg which is always found first when calling `avcodec_find_decoder`.

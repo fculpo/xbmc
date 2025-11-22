@@ -1179,6 +1179,22 @@ const infomap player_times[] =   {{ "seektime",         PLAYER_SEEKTIME },
 ///     @skinning_v17 **[New Infolabel]** \link Player_Process_aml_eoft_gamut `Player.Process(amlogic.eoft_gamut)`\endlink
 ///     <p>
 ///   }
+///   \table_row3{   <b>`Player.Process(videobitdepth)`</b>,
+///                  \anchor Player_Process_videobitdepth
+///                  _string_,
+///     @return Bit depth of the currently playing video.
+///     <p><hr>
+///     @skinning_v17 **[New Infolabel]** \link Player_Process_videobitdepth `Player.Process(videobitdepth)`\endlink
+///     <p>
+///   }
+///   \table_row3{   <b>`Player.Process(videohdrtype)`</b>,
+///                  \anchor Player_Process_videohdrtype
+///                  _string_,
+///     @return HDR type of the currently playing video.
+///     <p><hr>
+///     @skinning_v17 **[New Infolabel]** \link Player_Process_videohdrtype `Player.Process(videohdrtype)`\endlink
+///     <p>
+///   }
 /// \table_end
 ///
 /// -----------------------------------------------------------------------------
@@ -1194,11 +1210,103 @@ const infomap player_process[] = {{"videodecoder", PLAYER_PROCESS_VIDEODECODER},
                                   {"audiodecoder", PLAYER_PROCESS_AUDIODECODER},
                                   {"audiochannels", PLAYER_PROCESS_AUDIOCHANNELS},
                                   {"audiosamplerate", PLAYER_PROCESS_AUDIOSAMPLERATE},
+                                  {"audio.sample.rate", PLAYER_PROCESS_AUDIO_SAMPLE_RATE},
                                   {"audiobitspersample", PLAYER_PROCESS_AUDIOBITSPERSAMPLE},
+                                  {"audio.live.bit.rate", PLAYER_PROCESS_AUDIO_LIVE_BIT_RATE},
+                                  {"audio.live.kibit.rate", PLAYER_PROCESS_AUDIO_LIVE_KIBIT_RATE},
+                                  {"audio.live.mibit.rate", PLAYER_PROCESS_AUDIO_LIVE_MIBIT_RATE},
+                                  {"audio.queue.level", PLAYER_PROCESS_AUDIO_QUEUE_LEVEL},
+                                  {"audio.queue.data.level", PLAYER_PROCESS_AUDIO_QUEUE_DATA_LEVEL},
+                                  {"video.live.bit.rate", PLAYER_PROCESS_VIDEO_LIVE_BIT_RATE},
+                                  {"video.live.kibit.rate", PLAYER_PROCESS_VIDEO_LIVE_KIBIT_RATE},
+                                  {"video.live.mibit.rate", PLAYER_PROCESS_VIDEO_LIVE_MIBIT_RATE},
+                                  {"video.queue.level", PLAYER_PROCESS_VIDEO_QUEUE_LEVEL},
+                                  {"video.queue.data.level", PLAYER_PROCESS_VIDEO_QUEUE_DATA_LEVEL},
                                   {"videoscantype", PLAYER_PROCESS_VIDEOSCANTYPE},
+                                  {"video.bit.depth", PLAYER_PROCESS_VIDEO_BIT_DEPTH },
+                                  
+                                  {"video.hdr.type", PLAYER_PROCESS_VIDEO_HDR_TYPE },
+                                  {"video.hdr.type.raw", PLAYER_PROCESS_VIDEO_HDR_TYPE_RAW },
+                                  {"video.source.hdr.type", PLAYER_PROCESS_VIDEO_SOURCE_HDR_TYPE },
+                                  {"video.source.hdr.type.raw", PLAYER_PROCESS_VIDEO_SOURCE_HDR_TYPE_RAW },
+                                  {"video.source.additional.hdr.type", PLAYER_PROCESS_VIDEO_SOURCE_ADDITIONAL_HDR_TYPE },
+                                  {"video.source.additional.hdr.type.raw", PLAYER_PROCESS_VIDEO_SOURCE_ADDITIONAL_HDR_TYPE_RAW },
+                                  
+                                  {"video.width.raw", PLAYER_PROCESS_VIDEO_WIDTH_RAW},
+                                  {"video.height.raw", PLAYER_PROCESS_VIDEO_HEIGHT_RAW},
+                                  {"video.color.space", PLAYER_PROCESS_VIDEO_COLOR_SPACE },
+                                  {"video.color.range", PLAYER_PROCESS_VIDEO_COLOR_RANGE },
+                                  {"video.color.primaries", PLAYER_PROCESS_VIDEO_COLOR_PRIMARIES },
+                                  {"video.color.transfer.characteristic", PLAYER_PROCESS_VIDEO_COLOR_TRANSFER_CHARACTERISTIC },
+                                  
+                                  {"video.dovi.has.config", PLAYER_PROCESS_VIDEO_DOVI_HAS_CONFIG },
+
+                                  {"video.dovi.version.major", PLAYER_PROCESS_VIDEO_DOVI_VERSION_MAJOR },
+                                  {"video.dovi.version.minor", PLAYER_PROCESS_VIDEO_DOVI_VERSION_MINOR },
+                                  {"video.dovi.profile", PLAYER_PROCESS_VIDEO_DOVI_PROFILE },
+                                  {"video.dovi.level", PLAYER_PROCESS_VIDEO_DOVI_LEVEL },
+                                  {"video.dovi.rpu.present", PLAYER_PROCESS_VIDEO_DOVI_RPU_PRESENT },
+                                  {"video.dovi.el.present", PLAYER_PROCESS_VIDEO_DOVI_EL_PRESENT },                                  
+                                  {"video.dovi.bl.present", PLAYER_PROCESS_VIDEO_DOVI_BL_PRESENT },
+                                  {"video.dovi.bl.signal.compatibility", PLAYER_PROCESS_VIDEO_DOVI_BL_SIGNAL_COMPATIBILITY },
+
+                                  {"video.source.dovi.profile", PLAYER_PROCESS_VIDEO_SOURCE_DOVI_PROFILE },
+                                  {"video.source.dovi.el.present", PLAYER_PROCESS_VIDEO_SOURCE_DOVI_EL_PRESENT },
+                                  {"video.source.dovi.el.type", PLAYER_PROCESS_VIDEO_SOURCE_DOVI_EL_TYPE },
+                                  {"video.source.dovi.bl.signal.compatibility", PLAYER_PROCESS_VIDEO_SOURCE_DOVI_BL_SIGNAL_COMPATIBILITY },
+
+                                  {"video.dovi.codec.fourcc", PLAYER_PROCESS_VIDEO_DOVI_CODEC_FOURCC },
+                                  {"video.dovi.codec.string", PLAYER_PROCESS_VIDEO_DOVI_CODEC_STRING },
+
+                                  {"video.dovi.el.type", PLAYER_PROCESS_VIDEO_DOVI_EL_TYPE },
+                                  {"video.dovi.meta.version", PLAYER_PROCESS_VIDEO_DOVI_META_VERSION },
+
+                                  {"video.dovi.has.header", PLAYER_PROCESS_VIDEO_DOVI_HAS_HEADER },
+
+                                  {"video.dovi.l1.min.pq", PLAYER_PROCESS_VIDEO_DOVI_L1_MIN_PQ },
+                                  {"video.dovi.l1.max.pq", PLAYER_PROCESS_VIDEO_DOVI_L1_MAX_PQ },
+                                  {"video.dovi.l1.avg.pq", PLAYER_PROCESS_VIDEO_DOVI_L1_AVG_PQ },
+
+                                  {"video.dovi.l1.min.nits", PLAYER_PROCESS_VIDEO_DOVI_L1_MIN_NITS },
+                                  {"video.dovi.l1.max.nits", PLAYER_PROCESS_VIDEO_DOVI_L1_MAX_NITS },
+                                  {"video.dovi.l1.avg.nits", PLAYER_PROCESS_VIDEO_DOVI_L1_AVG_NITS },
+
+                                  {"video.dovi.has.l5", PLAYER_PROCESS_VIDEO_DOVI_HAS_L5 },
+                                  {"video.dovi.l5.left.offset", PLAYER_PROCESS_VIDEO_DOVI_L5_LEFT_OFFSET },
+                                  {"video.dovi.l5.right.offset", PLAYER_PROCESS_VIDEO_DOVI_L5_RIGHT_OFFSET },
+                                  {"video.dovi.l5.top.offset", PLAYER_PROCESS_VIDEO_DOVI_L5_TOP_OFFSET },
+                                  {"video.dovi.l5.bottom.offset", PLAYER_PROCESS_VIDEO_DOVI_L5_BOTTOM_OFFSET },
+
+                                  {"video.dovi.source.min.pq", PLAYER_PROCESS_VIDEO_DOVI_SOURCE_MIN_PQ },
+                                  {"video.dovi.source.max.pq", PLAYER_PROCESS_VIDEO_DOVI_SOURCE_MAX_PQ },
+                                  {"video.dovi.source.min.nits", PLAYER_PROCESS_VIDEO_DOVI_SOURCE_MIN_NITS },
+                                  {"video.dovi.source.max.nits", PLAYER_PROCESS_VIDEO_DOVI_SOURCE_MAX_NITS },
+
+                                  {"video.dovi.has.l6", PLAYER_PROCESS_VIDEO_DOVI_HAS_L6 },
+                                  {"video.dovi.l6.max.cll", PLAYER_PROCESS_VIDEO_DOVI_L6_MAX_CLL },
+                                  {"video.dovi.l6.max.fall", PLAYER_PROCESS_VIDEO_DOVI_L6_MAX_FALL },
+                                  {"video.dovi.l6.min.lum", PLAYER_PROCESS_VIDEO_DOVI_L6_MIN_LUM },
+                                  {"video.dovi.l6.max.lum", PLAYER_PROCESS_VIDEO_DOVI_L6_MAX_LUM },
+
+                                  {"video.hdr.has.cll", PLAYER_PROCESS_VIDEO_HDR_HAS_CLL },
+                                  {"video.hdr.max.cll", PLAYER_PROCESS_VIDEO_HDR_MAX_CLL },
+                                  {"video.hdr.max.fall", PLAYER_PROCESS_VIDEO_HDR_MAX_FALL },
+                                  {"video.hdr.has.mdcv", PLAYER_PROCESS_VIDEO_HDR_HAS_MDCV },
+                                  {"video.hdr.min.lum", PLAYER_PROCESS_VIDEO_HDR_MIN_LUM },
+                                  {"video.hdr.max.lum", PLAYER_PROCESS_VIDEO_HDR_MAX_LUM },
+                                  {"video.hdr.colour.primaries", PLAYER_PROCESS_VIDEO_HDR_COLOUR_PRIMARIES },
+
                                   {"amlogic.pixformat", PLAYER_PROCESS_AML_PIXELFORMAT },
                                   {"amlogic.displaymode", PLAYER_PROCESS_AML_DISPLAYMODE },
-                                  {"amlogic.eoft_gamut", PLAYER_PROCESS_AML_EOFT_GAMUT }};
+                                  {"amlogic.eoft_gamut", PLAYER_PROCESS_AML_EOFT_GAMUT },
+                                  {"amlogic.vs10.mode", PLAYER_PROCESS_AML_VS10_MODE },
+                                  {"amlogic.vs10.mode.raw", PLAYER_PROCESS_AML_VS10_MODE_RAW },
+                                  {"amlogic.video.fps.info", PLAYER_PROCESS_AML_VIDEO_FPS_INFO },
+                                  {"amlogic.video.fps.drop", PLAYER_PROCESS_AML_VIDEO_FPS_DROP },
+                                  
+                                  {"av.change", PLAYER_PROCESS_AV_CHANGE },
+                                
+                                  {"audiochannelssink", PLAYER_PROCESS_AUDIOCHANNELS_SINK}};
 
 /// \page modules__infolabels_boolean_conditions
 /// \subsection modules__infolabels_boolean_conditions_Weather Weather
@@ -1970,6 +2078,7 @@ const infomap system_labels[] = {
     {"dpmsactive", SYSTEM_DPMS_ACTIVE},
     {"cputemperature", SYSTEM_CPU_TEMPERATURE}, // labels from here
     {"cpuusage", SYSTEM_CPU_USAGE},
+    {"cpualtusage", SYSTEM_CPU_ALT_USAGE},
     {"gputemperature", SYSTEM_GPU_TEMPERATURE},
     {"fanspeed", SYSTEM_FAN_SPEED},
     {"freespace", SYSTEM_FREE_SPACE},
@@ -4019,16 +4128,26 @@ const infomap videoplayer[] =    {{ "title",            VIDEOPLAYER_TITLE },
                                   { "videoresolution",  VIDEOPLAYER_VIDEO_RESOLUTION },
                                   { "videoaspect",      VIDEOPLAYER_VIDEO_ASPECT },
                                   { "videobitrate",     VIDEOPLAYER_VIDEO_BITRATE },
+                                  { "videoaltbitrate",  VIDEOPLAYER_VIDEO_BIT_RATE },
+                                  { "videokibitrate",   VIDEOPLAYER_VIDEO_KIBIT_RATE },
+                                  { "videomibitrate",   VIDEOPLAYER_VIDEO_MIBIT_RATE },
                                   { "audiocodec",       VIDEOPLAYER_AUDIO_CODEC },
                                   { "audiochannels",    VIDEOPLAYER_AUDIO_CHANNELS },
                                   { "audiobitrate",     VIDEOPLAYER_AUDIO_BITRATE },
+                                  { "audioaltbitrate",  VIDEOPLAYER_AUDIO_BIT_RATE },
+                                  { "audiokibitrate",   VIDEOPLAYER_AUDIO_KIBIT_RATE },
+                                  { "audiomibitrate",   VIDEOPLAYER_AUDIO_MIBIT_RATE },                                  
                                   { "audiolanguage",    VIDEOPLAYER_AUDIO_LANG },
+                                  { "audiolanguageex",  VIDEOPLAYER_AUDIO_LANG_EX },
+                                  { "audioname",        VIDEOPLAYER_AUDIO_NAME },
                                   { "hasteletext",      VIDEOPLAYER_HASTELETEXT },
                                   { "lastplayed",       VIDEOPLAYER_LASTPLAYED },
                                   { "playcount",        VIDEOPLAYER_PLAYCOUNT },
                                   { "hassubtitles",     VIDEOPLAYER_HASSUBTITLES },
                                   { "subtitlesenabled", VIDEOPLAYER_SUBTITLESENABLED },
                                   { "subtitleslanguage",VIDEOPLAYER_SUBTITLES_LANG },
+                                  { "subtitleslangex",  VIDEOPLAYER_SUBTITLES_LANG_EX },
+                                  { "subtitlesname",    VIDEOPLAYER_SUBTITLES_NAME },
                                   { "starttime",        VIDEOPLAYER_STARTTIME },
                                   { "endtime",          VIDEOPLAYER_ENDTIME },
                                   { "nexttitle",        VIDEOPLAYER_NEXT_TITLE },
@@ -10216,6 +10335,12 @@ int CGUIInfoManager::TranslateSingleString(const std::string &strCondition, bool
           StringUtils::ToLower(paramCopy);
           return AddMultiInfo(CGUIInfo(SYSTEM_GET_BOOL, paramCopy));
         }
+        if (prop.name == "getint")
+        {
+          std::string paramCopy = param;
+          StringUtils::ToLower(paramCopy);
+          return AddMultiInfo(CGUIInfo(SYSTEM_GET_INT, paramCopy));
+        }
         for (const infomap& i : system_param)
         {
           if (prop.name == i.str)
@@ -10503,6 +10628,8 @@ int CGUIInfoManager::TranslateSingleString(const std::string &strCondition, bool
           return AddMultiInfo(CGUIInfo(SKIN_TIMER_IS_RUNNING, prop.param(0)));
         else if (prop.name == "timerelapsedsecs")
           return AddMultiInfo(CGUIInfo(SKIN_TIMER_ELAPSEDSECS, prop.param(0)));
+        else if (prop.name == "hasfile")
+          return AddMultiInfo(CGUIInfo(SKIN_HAS_FILE, prop.param(0)));
       }
     }
     else if (cat.name == "window")
@@ -11258,6 +11385,50 @@ void CGUIInfoManager::UpdateAVInfo()
     appPlayer->GetSubtitleStreamInfo(CURRENT_STREAM, subtitle);
 
     m_infoProviders.UpdateAVInfo(audio, video, subtitle);
+
+    int channels = audio.channels;
+    std::string audio_layout = "Null";               // Null
+    switch (channels)
+    {
+    case 0:
+      audio_layout = "No Channels";                   // No Channels
+      break;
+    case 1:
+      audio_layout = "Mono";                           // 1.0
+      break;
+    case 2:
+      audio_layout = "FL, FR";                          // 2.0
+      break;
+    case 3:
+      audio_layout = "FL, FR, LFE";                      // 2.1
+      break;
+    case 4:
+      audio_layout = "FL, FR, BL, BR";                    // 4.0
+      break;
+    case 5:
+      audio_layout = "FL, FR, LFE, BL, BR";                // 4.1
+      break;
+    case 6:
+      audio_layout = "FL, FR, FC, LFE, SL, SR";             // 5.1
+      break;
+    case 7:
+      audio_layout = "FL, FR, FC, LFE, BL, BR, BC";          // 6.1
+      break;
+    case 8:
+      audio_layout = "FL, FR, FC, LFE, BL, BR, SL, SR";       // 7.1
+      break;
+    case 9:
+      audio_layout = "Undefined";                               // Undefined
+      break;
+    case 10:
+      audio_layout = "FL, FR, FC, LFE, BL, BR, SL, SR, FWL, FWR"; // 9.1
+      break;
+    default:
+      audio_layout = "Unknown";                                    // Unknown
+      break;
+    }
+
+    CServiceBroker::GetDataCacheCore().SetAudioChannels(audio_layout);
   }
 }
 
