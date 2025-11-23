@@ -2547,7 +2547,7 @@ int CAMLCodec::m_pollDevice;
 
 int CAMLCodec::PollFrame()
 {
-  std::unique_lock<CCriticalSection> lock(pollSyncMutex);
+  std::unique_lock<std::mutex> lock(pollSyncMutex);
 
   if (m_pollDevice < 0)
     return 0;
@@ -2566,12 +2566,12 @@ int CAMLCodec::PollFrame()
 
 void CAMLCodec::SetPollDevice(int dev)
 {
-  std::unique_lock<CCriticalSection> lock(pollSyncMutex);
+  std::unique_lock<std::mutex> lock(pollSyncMutex);
 
   m_pollDevice = dev;
 }
 
-int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
+int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop) const
 {
   int ret;
   v4l2_buffer vbuf = v4l2_buffer();
@@ -2597,7 +2597,7 @@ float CAMLCodec::GetBufferLevel()
   return GetBufferLevel(new_chunk, data_len, free_len);
 }
 
-float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len)
+float CAMLCodec::GetBufferLevel(int new_chunk, int &data_len, int &free_len) const
 {
   struct buf_status bs;
   float level = 0.0f;
@@ -3027,13 +3027,13 @@ void CAMLCodec::SetVideoRect(const CRect &SrcRect, const CRect &DestRect)
   ShowMainVideo(true);
 }
 
-void CAMLCodec::SetVideoRate(int videoRate)
+void CAMLCodec::SetVideoRate(int videoRate) const
 {
   if (am_private)
     am_private->video_rate = videoRate;
 }
 
-unsigned int CAMLCodec::GetDecoderVideoRate()
+unsigned int CAMLCodec::GetDecoderVideoRate() const
 {
   if (m_speed != DVD_PLAYSPEED_NORMAL || m_pollDevice < 0)
     return 0;
@@ -3045,7 +3045,7 @@ unsigned int CAMLCodec::GetDecoderVideoRate()
     return 0;
 }
 
-std::string CAMLCodec::GetHDRStaticMetadata()
+std::string CAMLCodec::GetHDRStaticMetadata() const
 {
   // add static HDR metadata for VP9 content
   if (am_private->video_format == VFORMAT_VP9 && m_hints.masteringMetadata)

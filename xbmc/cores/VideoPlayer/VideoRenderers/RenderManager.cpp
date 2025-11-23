@@ -675,7 +675,7 @@ void CRenderManager::RemoveCaptures()
   m_captures.clear();
 }
 
-void CRenderManager::SetViewMode(int iViewMode)
+void CRenderManager::SetViewMode(int iViewMode) const
 {
   std::unique_lock<CCriticalSection> lock(m_statelock);
   if (m_pRenderer)

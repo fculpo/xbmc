@@ -63,7 +63,7 @@ private:
   static snd_pcm_chmap_t* AEChannelMapToALSAchmap(const CAEChannelInfo& info);
   static snd_pcm_chmap_t* CopyALSAchmap(snd_pcm_chmap_t* alsaMap);
   static std::string ALSAchmapToString(snd_pcm_chmap_t* alsaMap);
-  static unsigned int ALSAchmapActiveCount(snd_pcm_chmap_t& chmap);
+  static unsigned int ALSAchmapActiveCount(const snd_pcm_chmap_t& chmap);
   static CAEChannelInfo GetAlternateLayoutForm(const CAEChannelInfo& info);
   snd_pcm_chmap_t* SelectALSAChannelMap(const CAEChannelInfo& info);
 

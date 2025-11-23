@@ -21,7 +21,11 @@ std::string CDemuxStreamAudio::GetStreamType()
       break;
     case AV_CODEC_ID_EAC3:
     {
+#ifdef FF_PROFILE_EAC3_DDP_ATMOS
       if (profile == FF_PROFILE_EAC3_DDP_ATMOS)
+#else
+      if (false)
+#endif
         strInfo = "DD+ ATMOS ";
       else
         strInfo = "DD+ ";
@@ -47,12 +51,16 @@ std::string CDemuxStreamAudio::GetStreamType()
         case FF_PROFILE_DTS_HD_HRA:
           strInfo = "DTS-HD HRA ";
           break;
+#ifdef FF_PROFILE_DTS_HD_MA_X
         case FF_PROFILE_DTS_HD_MA_X:
+#endif
+#ifdef FF_PROFILE_DTS_HD_MA_X_IMAX
+        case FF_PROFILE_DTS_HD_MA_X_IMAX:
+#endif
+#if defined(FF_PROFILE_DTS_HD_MA_X) || defined(FF_PROFILE_DTS_HD_MA_X_IMAX)
           strInfo = "DTS-HD MA X ";
           break;
-        case FF_PROFILE_DTS_HD_MA_X_IMAX:
-          strInfo = "DTS-HD MA X (IMAX) ";
-          break;
+#endif
         default:
           strInfo = "DTS ";
           break;
@@ -66,7 +74,11 @@ std::string CDemuxStreamAudio::GetStreamType()
       strInfo = "MP3 ";
       break;
     case AV_CODEC_ID_TRUEHD:
+#ifdef FF_PROFILE_TRUEHD_ATMOS
       if (profile == FF_PROFILE_TRUEHD_ATMOS)
+#else
+      if (false)
+#endif
         strInfo = "TrueHD ATMOS ";
       else
         strInfo = "TrueHD ";
